@@ -8,6 +8,10 @@ description: Connect READ-ONLY to a Europharmacy / Euromedica pharmacy SQL Serve
 Connect to the live pharmacy database and answer sales/product/stock questions. **Always read-only** (`SELECT` only — never INSERT/UPDATE/DELETE/DDL). Use `SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED` so queries never lock the point-of-sale terminals.
 
 > First-time setup (Tailscale, finding the DB, firewall, credentials): run the **`europharmacy-setup`** skill. This skill assumes a working `.env` already exists.
+>
+> **Site-specific facts** (opening hours, known outlier receipts, till names, quirks of this
+> pharmacy's data) belong in a `SITE-NOTES.md` next to this file — **read it first if present**.
+> Keep them out of this file so it stays generic and updatable from the upstream repo.
 
 ## Connection
 

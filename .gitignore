@@ -36,3 +36,7 @@ Thumbs.db
 desktop.ini
 *.swp
 .idea/
+
+# Local, per-pharmacy notes that must never be published
+SITE-NOTES.md
+**/SITE-NOTES.md

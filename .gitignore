@@ -12,6 +12,9 @@ connectionstrings*.json
 
 # ─── Pharmacy business data (reports, exports, dumps) ─────────────────────
 # These contain real sales / patient / financial data. Keep them OUT of git.
+# The report generator writes here by default:
+Αναφορές/
+Εβδομαδιαία_*
 Έρευνα_*.md
 Ανάλυση_*.md
 *_report.md
@@ -23,6 +26,10 @@ connectionstrings*.json
 *.bak
 *.csv
 *.xlsx
+# Generated report artifacts (the .typ is data-bearing too, not just the PDF)
+*.pdf
+*.typ
+!docs/**/*.pdf
 
 # ─── Database artifacts ──────────────────────────────────────────────────
 *.mdf

@@ -20,6 +20,38 @@ detection — and get answers, tables, and charts back.
 
 New install → run `europharmacy-setup` first, then use `europharmacy-db`.
 
+## Weekly PDF report
+
+[`scripts/weekly-report.ps1`](scripts/weekly-report.ps1) generates a designed weekly sales PDF
+(via [Typst](https://typst.app)) and can email it. It reads everything site-specific from `.env`,
+so it runs unchanged at any pharmacy.
+
+The report covers: summary KPIs vs the previous week, a daily table plus a morning/afternoon bar
+chart, **per-till × per-day matrix**, payment-method breakdown (cash / card / bank deposit / credit,
+with a reconciliation column), card totals per POS terminal, medicines vs parapharmaceuticals,
+parapharmaceuticals by category, top products per category, and a 6-week trend.
+
+```powershell
+winget install Typst.Typst           # one-off
+
+.\scripts\weekly-report.ps1                       # last complete week (Mon–Sun)
+.\scripts\weekly-report.ps1 -WeekStart 2026-07-27 # a specific week
+.\scripts\weekly-report.ps1 -Email                # also email it (needs EUROPHARMACY_SMTP_* in .env)
+```
+
+Run it automatically every Monday morning:
+
+```powershell
+$s = (Resolve-Path .\scripts\weekly-report.ps1).Path
+Register-ScheduledTask -TaskName "Europharmacy weekly report" -Force `
+  -Action (New-ScheduledTaskAction -Execute powershell.exe `
+      -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$s`" -NoOpen -Email") `
+  -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 08:30) `
+  -Settings (New-ScheduledTaskSettingsSet -StartWhenAvailable -RunOnlyIfNetworkAvailable)
+```
+
+Generated reports are **gitignored** — they contain real financial data and must not be committed.
+
 ## Security model (read this)
 
 - **No secrets in this repo.** Every site-specific value — server address, SQL login, password —

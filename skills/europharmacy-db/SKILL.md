@@ -30,6 +30,11 @@ Facts true for every install of this software:
 
 > ⚠️ If the pharmacy has a second, local **standby/backup** SQL instance, do not query it — it holds stale data. Always target the live server named in `.env`.
 
+> **Ready-made weekly PDF:** `scripts/weekly-report.ps1` in this repo already produces a full
+> designed weekly report (KPIs, daily chart, per-till matrix, payment breakdown, medicines vs
+> parapharmaceuticals, category tables, 6-week trend) and can email it. Prefer running/adapting it
+> over hand-rolling a weekly report. `-WeekStart yyyy-MM-dd` picks the week; `-Email` sends it.
+
 ### PowerShell connection boilerplate (portable `.env` resolver)
 ```powershell
 # Find the .env: $EUROPHARMACY_ENV, else walk UP from the current directory

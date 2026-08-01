@@ -20,16 +20,26 @@ detection — and get answers, tables, and charts back.
 
 New install → run `europharmacy-setup` first, then use `europharmacy-db`.
 
-## Weekly PDF report
+## PDF reports
 
-[`scripts/weekly-report.ps1`](scripts/weekly-report.ps1) generates a designed weekly sales PDF
-(via [Typst](https://typst.app)) and can email it. It reads everything site-specific from `.env`,
-so it runs unchanged at any pharmacy.
+Two generators build designed sales PDFs via [Typst](https://typst.app) and can email them. Both
+read everything site-specific from `.env`, so they run unchanged at any pharmacy, and share
+[`scripts/lib/report-common.ps1`](scripts/lib/report-common.ps1) (config, connection, formatting,
+branding, mail).
 
-The report covers: summary KPIs vs the previous week, a daily table plus a morning/afternoon bar
-chart, **per-till × per-day matrix**, payment-method breakdown (cash / card / bank deposit / credit,
-with a reconciliation column), card totals per POS terminal, medicines vs parapharmaceuticals,
-parapharmaceuticals by category, top products per category, and a 6-week trend.
+**[`scripts/weekly-report.ps1`](scripts/weekly-report.ps1)** — summary KPIs vs the previous week, a
+daily table plus a morning/afternoon bar chart, **per-till × per-day matrix**, payment-method
+breakdown (cash / card / bank deposit / credit, with a reconciliation column), card totals per POS
+terminal, medicines vs parapharmaceuticals, parapharmaceuticals by category, top products per
+category, and a 6-week trend.
+
+**[`scripts/daily-report.ps1`](scripts/daily-report.ps1)** — one page for a single day. It compares
+against the average of the **last 8 same weekdays** rather than "yesterday", because pharmacy
+traffic is strongly weekday-dependent, so a Monday only makes sense next to other Mondays. Its
+hourly chart draws each hour's bar against a marker at that hour's typical level, and greys hours
+that came in below it — so you can see *when* a day over- or under-performed, not just whether it
+did. Also: tills, payment mix, top products flagged medicine/parapharmaceutical, the last 8 same
+weekdays as bars, and a notables line (largest receipt, peak hour, voids).
 
 ```powershell
 winget install Typst.Typst           # one-off
@@ -37,6 +47,9 @@ winget install Typst.Typst           # one-off
 .\scripts\weekly-report.ps1                       # last complete week (Mon–Sun)
 .\scripts\weekly-report.ps1 -WeekStart 2026-07-27 # a specific week
 .\scripts\weekly-report.ps1 -Email                # also email it (needs EUROPHARMACY_SMTP_* in .env)
+
+.\scripts\daily-report.ps1                        # last day that had sales
+.\scripts\daily-report.ps1 -Date 2026-07-31 -Email
 ```
 
 Run it automatically every Monday morning:

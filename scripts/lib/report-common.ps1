@@ -1,0 +1,209 @@
+﻿<#
+  Κοινός κώδικας για τις αναφορές (εβδομαδιαία / ημερήσια).
+  Dot-source: . "$PSScriptRoot\lib\report-common.ps1"
+  Read-only: μόνο SELECT, πάντα READ UNCOMMITTED.
+#>
+
+# ── .env ─────────────────────────────────────────────────────────────────
+function Resolve-EuropharmacyEnv {
+  param([string]$StartDir)
+  $isOurs = { param($p) (Test-Path $p) -and (Select-String -Path $p -Pattern '^\s*EUROPHARMACY_DB_' -Quiet) }
+  if ($env:EUROPHARMACY_ENV -and (& $isOurs $env:EUROPHARMACY_ENV)) { return $env:EUROPHARMACY_ENV }
+  $d = if ($StartDir) { $StartDir } else { (Get-Location).Path }
+  while ($d) {
+    $p = Join-Path $d '.env'
+    if (& $isOurs $p) { return $p }
+    $par = Split-Path $d -Parent; if ($par -eq $d) { break }; $d = $par
+  }
+  $h = Join-Path $HOME '.europharmacy\.env'
+  if (& $isOurs $h) { return $h }
+  throw "Δεν βρέθηκε .env (δες skill europharmacy-setup)."
+}
+
+function Get-PharmacyConfig {
+  param([string]$StartDir)
+  $file = Resolve-EuropharmacyEnv -StartDir $StartDir
+  $cfg = @{}
+  # -Encoding UTF8: χωρίς αυτό το PS 5.1 διαβάζει ANSI και σπάνε οι ελληνικές τιμές.
+  Get-Content $file -Encoding UTF8 | Where-Object { $_ -match '^\s*[^#].*=' } |
+    ForEach-Object { $k,$v = $_ -split '=',2; $cfg[$k.Trim()] = $v.Trim() }
+  $cfg['_envFile'] = $file
+  $cfg['_envDir']  = Split-Path -Parent $file
+  return $cfg
+}
+
+# ── βάση ─────────────────────────────────────────────────────────────────
+function Open-PharmacyDb {
+  param([hashtable]$Cfg, [int]$Timeout = 20)
+  foreach ($k in @('EUROPHARMACY_DB_CONNSTR','EUROPHARMACY_DB_CONNSTR_LAN')) {
+    if (-not $Cfg[$k]) { continue }
+    try {
+      $cn = New-Object System.Data.SqlClient.SqlConnection ($Cfg[$k] + ";Connect Timeout=$Timeout")
+      $cn.Open()
+      $c = $cn.CreateCommand()
+      $c.CommandText = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; SET DATEFIRST 1;"
+      $c.ExecuteNonQuery() | Out-Null
+      return [pscustomobject]@{ Connection = $cn; Route = $k }
+    } catch { }
+  }
+  throw "Δεν υπάρχει σύνδεση με τη βάση (server κλειστός ή Tailscale down)."
+}
+
+function Invoke-Rows {
+  param($Connection, [string]$Sql, [int]$Timeout = 300)
+  $cmd = $Connection.CreateCommand()
+  $cmd.CommandText = $Sql; $cmd.CommandTimeout = $Timeout
+  $rd = $cmd.ExecuteReader(); $out = @()
+  while ($rd.Read()) {
+    $h = [ordered]@{}
+    for ($i=0; $i -lt $rd.FieldCount; $i++) { $h[$rd.GetName($i)] = $rd.GetValue($i) }
+    $out += [pscustomobject]$h
+  }
+  $rd.Close(); return ,$out
+}
+
+# ── μορφοποίηση ──────────────────────────────────────────────────────────
+$script:GR = [System.Globalization.CultureInfo]::GetCultureInfo('el-GR')
+function Format-Money { param($v)
+  if ($null -eq $v -or $v -is [DBNull]) { '0,00' } else { ([decimal]$v).ToString('N2',$script:GR) } }
+function Format-Num { param($v,[int]$dec=1)
+  if ($null -eq $v -or $v -is [DBNull]) { '0' } else { ([decimal]$v).ToString("N$dec",$script:GR) } }
+function Format-Pct { param([double]$x)
+  $s = if ($x -ge 0) { '+' } else { [char]0x2212 }
+  "$s$(([decimal][math]::Abs($x)).ToString('N1',$script:GR))%" }
+
+# Escape για Typst content. ΠΡΟΣΟΧΗ: το backslash πρώτο και ΜΙΑ φορά διπλό —
+# στο -replace το '\' δεν είναι ειδικό στο replacement, οπότε '\\' = δύο χαρακτήρες.
+function ConvertTo-TypstText { param([string]$s)
+  if ($null -eq $s) { return '' }
+  ($s -replace '\\','\\' -replace '"','\"' -replace '#','\#' -replace '\$','\$' `
+      -replace '@','\@' -replace '_','\_' -replace '\*','\*' -replace '<','\<' -replace '>','\>')
+}
+
+# Ελληνικά ονόματα ημερών από .NET DateTime — ΟΧΙ από DATENAME, που εξαρτάται
+# από τη γλώσσα του SQL Server και θα χαλούσε αν άλλαζε.
+function Get-GreekDayName { param([datetime]$d)
+  @('Κυριακή','Δευτέρα','Τρίτη','Τετάρτη','Πέμπτη','Παρασκευή','Σάββατο')[[int]$d.DayOfWeek] }
+function Get-GreekDayPlural { param([datetime]$d)
+  @('Κυριακές','Δευτέρες','Τρίτες','Τετάρτες','Πέμπτες','Παρασκευές','Σάββατα')[[int]$d.DayOfWeek] }
+function Get-GreekMonthName { param([int]$m)
+  @('','Ιανουαρίου','Φεβρουαρίου','Μαρτίου','Απριλίου','Μαΐου','Ιουνίου','Ιουλίου',
+    'Αυγούστου','Σεπτεμβρίου','Οκτωβρίου','Νοεμβρίου','Δεκεμβρίου')[$m] }
+
+# ── παλέτα / Typst preamble ──────────────────────────────────────────────
+function Get-Shade { param([string]$hex,[double]$f)
+  $h = $hex.TrimStart('#')
+  $r=[Convert]::ToInt32($h.Substring(0,2),16); $g=[Convert]::ToInt32($h.Substring(2,2),16); $b=[Convert]::ToInt32($h.Substring(4,2),16)
+  if ($f -le 1) { $r=[int]($r*$f); $g=[int]($g*$f); $b=[int]($b*$f) }
+  else { $t=$f-1; $r=[int]($r+(255-$r)*$t); $g=[int]($g+(255-$g)*$t); $b=[int]($b+(255-$b)*$t) }
+  '#{0:x2}{1:x2}{2:x2}' -f [math]::Min(255,$r),[math]::Min(255,$g),[math]::Min(255,$b) }
+
+function Get-Brand { param([hashtable]$Cfg)
+  $p = if ($Cfg['EUROPHARMACY_COLOR_PRIMARY']) { $Cfg['EUROPHARMACY_COLOR_PRIMARY'] } else { '#3f4a5a' }
+  $a = if ($Cfg['EUROPHARMACY_COLOR_ACCENT'])  { $Cfg['EUROPHARMACY_COLOR_ACCENT']  } else { '#7fc9bd' }
+  $s = if ($Cfg['EUROPHARMACY_COLOR_SECOND'])  { $Cfg['EUROPHARMACY_COLOR_SECOND']  } else { '#d9a05b' }
+  [pscustomobject]@{
+    Primary=$p; Accent=$a; Second=$s
+    AccentDark=(Get-Shade $a 0.70); AccentLight=(Get-Shade $a 1.55)
+    Name=$(if ($Cfg['EUROPHARMACY_NAME']) { $Cfg['EUROPHARMACY_NAME'] } else { 'Φαρμακείο' })
+  } }
+
+function Get-TypstPreamble {
+  param([hashtable]$Cfg, $Brand, [string]$FooterNote = 'read-only αναφορά', [string]$Margin = '(x: 1.4cm, top: 1.2cm, bottom: 1.4cm)')
+@"
+#let NAVY    = rgb("$($Brand.Primary)")
+#let MINT    = rgb("$($Brand.Accent)")
+#let MINT_DK = rgb("$($Brand.AccentDark)")
+#let MINT_LT = rgb("$($Brand.AccentLight)")
+#let SAND    = rgb("$($Brand.Second)")
+#let ACCENT  = NAVY
+#let ACCENT2 = rgb("#eaf0f4")
+#let INK     = rgb("#25303f")
+#let MUTED   = rgb("#78849a")
+#let ZEBRA   = rgb("#fafbfc")
+#let GOOD    = rgb("#15803d")
+#let BAD     = rgb("#b42318")
+#let WARN    = rgb("#a9702f")
+
+#set page(paper: "a4", margin: $Margin,
+  footer: context [#set text(size: 7.5pt, fill: MUTED)
+    #line(length: 100%, stroke: 0.3pt + MUTED) #v(-4pt)
+    #grid(columns: (1fr, auto), align: (left, right),
+      [$(ConvertTo-TypstText $Brand.Name) · $FooterNote],
+      [#counter(page).display("1 / 1", both: true)])])
+#set text(font: ("Calibri", "Arial"), size: 9.5pt, lang: "el", fill: INK)
+#show heading.where(level: 2): it => block(above: 11pt, below: 5pt)[#text(size: 11.5pt, weight: "medium", fill: ACCENT)[#it.body]]
+
+#let up(x) = text(fill: GOOD, weight: "medium", x)
+#let dn(x) = text(fill: BAD, weight: "medium", x)
+#let tbl(cols, align: none, ..args) = table(
+  columns: cols, align: align,
+  fill: (x, y) => if y == 0 { ACCENT2 } else if calc.odd(y) { ZEBRA },
+  stroke: (x, y) => (bottom: if y == 0 { 0.9pt + ACCENT } else { 0.25pt + rgb("#e5e7eb") }),
+  inset: (x: 5pt, y: 4pt),
+  ..args)
+"@
+}
+
+# Κεφαλίδα με logo. Επιστρέφει Typst string· αντιγράφει το logo δίπλα στο .typ
+# (το Typst δεν διαβάζει αρχεία εκτός του root του).
+function Get-TypstHeader {
+  param([hashtable]$Cfg, [string]$OutDir, [string]$Title, [string]$Subtitle, [string]$Note, [double]$BoxH = 54)
+  $logoTypst = 'box(width: 0pt)'
+  if ($Cfg['EUROPHARMACY_LOGO']) {
+    $lp = $Cfg['EUROPHARMACY_LOGO']
+    if (-not [System.IO.Path]::IsPathRooted($lp)) { $lp = Join-Path $Cfg['_envDir'] $lp }
+    if (Test-Path $lp) {
+      if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
+      $local = '_logo' + [System.IO.Path]::GetExtension($lp)
+      Copy-Item $lp (Join-Path (Resolve-Path $OutDir) $local) -Force
+      $zoom = 1.0
+      if ($Cfg['EUROPHARMACY_LOGO_ZOOM']) { $zoom = [double]::Parse($Cfg['EUROPHARMACY_LOGO_ZOOM'],[Globalization.CultureInfo]::InvariantCulture) }
+      $imgH = [math]::Round($BoxH * $zoom, 1)
+      $logoTypst = 'box(width: ' + ($BoxH*1.37) + 'pt, height: ' + $BoxH + 'pt, clip: true, align(center + horizon, image("' + $local + '", height: ' + $imgH + 'pt)))'
+    } else { Write-Warning "EUROPHARMACY_LOGO: δεν βρέθηκε $lp — χωρίς logo." }
+  }
+@"
+#block(fill: NAVY, width: 100%, inset: (x: 0pt, y: 0pt), radius: 4pt, clip: true)[
+  #grid(columns: (auto, 1fr), align: (left + horizon, right + horizon), inset: (x: 14pt, y: 9pt),
+    $logoTypst,
+    align(right)[
+      #text(fill: white, size: 16pt, weight: "medium")[$Title] \
+      #text(fill: MINT, size: 10.5pt)[$Subtitle] \
+      #text(fill: rgb("#9aa6bd"), size: 7.5pt)[$Note]
+    ])]
+"@
+}
+
+# ── compile ──────────────────────────────────────────────────────────────
+function Invoke-Typst {
+  param([string]$TypPath, [string]$PdfPath)
+  $exe = @("$env:LOCALAPPDATA\Microsoft\WinGet\Links\typst.exe", 'typst') |
+    Where-Object { Get-Command $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+  if (-not $exe) { throw "Δεν βρέθηκε το typst. Εγκατάσταση: winget install Typst.Typst" }
+  & $exe compile $TypPath $PdfPath
+  if ($LASTEXITCODE -ne 0) { throw "Απέτυχε το compile του typst ($TypPath)." }
+}
+
+# ── email ────────────────────────────────────────────────────────────────
+function Send-PharmacyMail {
+  param([hashtable]$Cfg, [string]$Subject, [string]$BodyHtml, [string[]]$Files)
+  foreach ($need in @('EUROPHARMACY_SMTP_HOST','EUROPHARMACY_SMTP_USER','EUROPHARMACY_SMTP_PASS','EUROPHARMACY_SMTP_TO')) {
+    if (-not $Cfg[$need]) { throw "Λείπει το $need από το .env." }
+  }
+  $port = if ($Cfg['EUROPHARMACY_SMTP_PORT']) { [int]$Cfg['EUROPHARMACY_SMTP_PORT'] } else { 587 }
+  $msg = New-Object Net.Mail.MailMessage
+  $msg.From = New-Object Net.Mail.MailAddress($Cfg['EUROPHARMACY_SMTP_USER'], 'Αναφορές Φαρμακείου')
+  foreach ($to in ($Cfg['EUROPHARMACY_SMTP_TO'] -split '[;,]')) { if ($to.Trim()) { $msg.To.Add($to.Trim()) } }
+  $msg.Subject = $Subject
+  $msg.SubjectEncoding = [Text.Encoding]::UTF8
+  $msg.BodyEncoding    = [Text.Encoding]::UTF8
+  $msg.IsBodyHtml = $true
+  $msg.Body = $BodyHtml
+  foreach ($f in $Files) { if ($f -and (Test-Path $f)) { $msg.Attachments.Add((New-Object Net.Mail.Attachment($f))) } }
+  $smtp = New-Object Net.Mail.SmtpClient($Cfg['EUROPHARMACY_SMTP_HOST'], $port)
+  $smtp.EnableSsl = $true
+  $smtp.Credentials = New-Object Net.NetworkCredential($Cfg['EUROPHARMACY_SMTP_USER'], $Cfg['EUROPHARMACY_SMTP_PASS'])
+  try { $smtp.Send($msg) } finally { $msg.Dispose(); $smtp.Dispose() }
+  return ($Cfg['EUROPHARMACY_SMTP_TO'])
+}

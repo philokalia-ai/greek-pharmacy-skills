@@ -186,8 +186,10 @@ $cn.Close()
 # ── helpers ──────────────────────────────────────────────────────────────
 $gr = [System.Globalization.CultureInfo]::GetCultureInfo('el-GR')
 function M($v) { if ($null -eq $v -or $v -is [DBNull]) { '0,00' } else { ([decimal]$v).ToString('N2',$gr) } }
-function Esc($s) { ($s -replace '\\','\\\\' -replace '"','\"' -replace '#','\#' -replace '\$','\$' -replace '@','\@' -replace '_','\_' -replace '\*','\*') }
-$dayGr = @{ 'Monday'='Δευτέρα';'Tuesday'='Τρίτη';'Wednesday'='Τετάρτη';'Thursday'='Πέμπτη';'Friday'='Παρασκευή';'Saturday'='Σάββατο';'Sunday'='Κυριακή' }
+function Esc($s) { ($s -replace '\\','\\' -replace '"','\"' -replace '#','\#' -replace '\$','\$' -replace '@','\@' -replace '_','\_' -replace '\*','\*') }
+# Ονόματα ημερών από .NET: το DATENAME εξαρτάται από τη γλώσσα του SQL Server.
+$dayNames = @('Κυριακή','Δευτέρα','Τρίτη','Τετάρτη','Πέμπτη','Παρασκευή','Σάββατο')
+function DayGr([datetime]$d) { $dayNames[[int]$d.DayOfWeek] }
 # Όνομα φαρμακείου για το υποσέλιδο — από το .env, ώστε το script να μένει γενικό
 $pharmacyName = if ($cfg['EUROPHARMACY_NAME']) { $cfg['EUROPHARMACY_NAME'] } else { 'Φαρμακείο' }
 
@@ -326,7 +328,7 @@ W '  [*Ημ/νία*],[*Ημέρα*],[*Αποδ.*],[*Σύνολο*],[*Πρωί*],
 foreach ($d in $daily) {
   $tt=[decimal]$d.T; $am=[decimal]$d.AM
   $p = if ($tt -ne 0) { [math]::Round($am/$tt*100) } else { 0 }
-  W ("  [" + ([datetime]$d.D).ToString('dd/MM') + "],[" + $dayGr[[string]$d.DOW] + "],[" + $d.R + "],[" + (M $tt) + "],[" + (M $am) + "],[" + $p + "%],")
+  W ("  [" + ([datetime]$d.D).ToString('dd/MM') + "],[" + (DayGr ([datetime]$d.D)) + "],[" + $d.R + "],[" + (M $tt) + "],[" + (M $am) + "],[" + $p + "%],")
 }
 W ("  [*Σύνολο*],[],[*$R*],[*$(M $T)*],[],[],")
 W ')'
@@ -356,6 +358,11 @@ if ($maxDay -gt 0) {
 # ── ταμεία × ημέρα ──
 EndSect
 Sect 'Ταμεία ανά ημέρα'
+if ($tillNames.Count -eq 0) {
+  # Χωρίς αυτόν τον έλεγχο, μια περίοδος χωρίς πωλήσεις (π.χ. κλειστά τον Αύγουστο)
+  # παρήγαγε «(auto,, auto)» και το Typst απέτυχε με συντακτικό σφάλμα.
+  W '#text(fill: MUTED)[Καμία πώληση στην περίοδο.]'
+} else {
 $nc = $tillNames.Count
 W ('#tbl((auto,' + (@('1fr') * $nc -join ',') + ', auto), align: (left,' + (@('right') * $nc -join ',') + ', right),')
 W ('  [*Ημ/νία*],' + (($tillNames | ForEach-Object { '[*' + (Esc $_) + '*]' }) -join ',') + ',[*Σύνολο*],')
@@ -370,6 +377,7 @@ foreach ($d in $days) {
 $colTots = foreach ($m in $tillNames) { '[*' + (M ($tills | Where-Object { $_.M -eq $m } | Measure-Object -Property T -Sum).Sum) + '*]' }
 W ('  [*Σύνολο*],' + ($colTots -join ',') + ',[*' + (M $T) + '*],')
 W ')'
+}
 W '#text(size: 8pt, fill: MUTED)[Ποσά σε € (πληρωτέο πελατών).]'
 
 # ── τρόποι πληρωμής ──

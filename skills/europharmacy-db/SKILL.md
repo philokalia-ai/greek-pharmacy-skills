@@ -30,10 +30,21 @@ Facts true for every install of this software:
 
 > ⚠️ If the pharmacy has a second, local **standby/backup** SQL instance, do not query it — it holds stale data. Always target the live server named in `.env`.
 
-> **Ready-made weekly PDF:** `scripts/weekly-report.ps1` in this repo already produces a full
-> designed weekly report (KPIs, daily chart, per-till matrix, payment breakdown, medicines vs
-> parapharmaceuticals, category tables, 6-week trend) and can email it. Prefer running/adapting it
-> over hand-rolling a weekly report. `-WeekStart yyyy-MM-dd` picks the week; `-Email` sends it.
+> **Ready-made PDFs:** prefer running/adapting these over hand-rolling a report.
+> - `scripts/weekly-report.ps1` — weekly (KPIs, daily chart, per-till matrix, payment breakdown,
+>   medicines vs parapharmaceuticals, category tables, 6-week trend). `-WeekStart yyyy-MM-dd`.
+> - `scripts/daily-report.ps1` — one-page day, benchmarked against the last 8 **same weekdays**
+>   (not "yesterday" — traffic is weekday-dependent), with an hourly chart marking each hour's
+>   typical level. `-Date yyyy-MM-dd`.
+>
+> Both take `-Email`, and share `scripts/lib/report-common.ps1` (config, DB, formatting, branding,
+> mail). Put new shared logic there rather than duplicating it between the two.
+
+### Benchmarking guidance
+Compare a day to the **same weekday**, and a week to the **previous week**. Comparing a day to the
+day before is misleading here: Monday is the busiest day and Saturday a fraction of a weekday, so a
+Monday-vs-Sunday delta measures the calendar, not the business. Exclude one-off wholesale receipts
+(`ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ >= 10000`) from any average used as a baseline.
 
 ### PowerShell connection boilerplate (portable `.env` resolver)
 ```powershell

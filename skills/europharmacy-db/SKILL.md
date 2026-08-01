@@ -32,13 +32,32 @@ Facts true for every install of this software:
 
 ### PowerShell connection boilerplate (portable `.env` resolver)
 ```powershell
-$envFile = $env:EUROPHARMACY_ENV
-if (-not $envFile) { foreach ($p in @("$PWD\.env", (Join-Path $HOME '.europharmacy\.env'))) { if (Test-Path $p) { $envFile = $p; break } } }
+# Find the .env: $EUROPHARMACY_ENV, else walk UP from the current directory
+# (so it works from any subfolder), else ~/.europharmacy/.env.
+# Only accept a file that actually holds EUROPHARMACY_DB_* keys, so an
+# unrelated project's .env is never picked up by mistake.
+function Resolve-EuropharmacyEnv {
+  $isOurs = { param($p) (Test-Path $p) -and (Select-String -Path $p -Pattern '^\s*EUROPHARMACY_DB_' -Quiet) }
+  if ($env:EUROPHARMACY_ENV -and (& $isOurs $env:EUROPHARMACY_ENV)) { return $env:EUROPHARMACY_ENV }
+  $d = (Get-Location).Path
+  while ($d) {
+    $p = Join-Path $d '.env'
+    if (& $isOurs $p) { return $p }
+    $parent = Split-Path $d -Parent
+    if ($parent -eq $d) { break }
+    $d = $parent
+  }
+  $h = Join-Path $HOME '.europharmacy\.env'
+  if (& $isOurs $h) { return $h }
+  throw "No Europharmacy .env found. Create ~/.europharmacy/.env from .env.example (or set `$env:EUROPHARMACY_ENV). See the europharmacy-setup skill."
+}
+$envFile = Resolve-EuropharmacyEnv
 $cfg = @{}; Get-Content $envFile | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k,$v = $_ -split '=',2; $cfg[$k.Trim()] = $v.Trim() }
 
-# Try default route, fall back to LAN on failure:
+# Try default route (Tailscale), fall back to LAN:
 $cn = $null
 foreach ($key in @('EUROPHARMACY_DB_CONNSTR','EUROPHARMACY_DB_CONNSTR_LAN')) {
+  if (-not $cfg[$key]) { continue }
   try { $cn = New-Object System.Data.SqlClient.SqlConnection ($cfg[$key] + ";Connect Timeout=15"); $cn.Open(); break }
   catch { $cn = $null }
 }

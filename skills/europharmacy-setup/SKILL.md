@@ -106,14 +106,25 @@ Recommended location: `~/.europharmacy/.env`.
 ## Step 5 — Test end to end (on the CLIENT)
 
 ```powershell
-$envFile = "$HOME\.europharmacy\.env"
+$envFile = "$HOME\.europharmacy\.env"   # or wherever you saved it
 $cfg = @{}; Get-Content $envFile | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k,$v = $_ -split '=',2; $cfg[$k.Trim()] = $v.Trim() }
 $cn = New-Object System.Data.SqlClient.SqlConnection ($cfg['EUROPHARMACY_DB_CONNSTR'] + ";Connect Timeout=10"); $cn.Open()
 $c = $cn.CreateCommand(); $c.CommandText = "SELECT @@SERVERNAME, DB_NAME(), SUSER_SNAME(), GETDATE()"
 $r = $c.ExecuteReader(); $r.Read() | Out-Null
 "OK -> {0} / {1} / {2} / {3}" -f $r[0],$r[1],$r[2],$r[3]; $cn.Close()
 ```
-Success → the `europharmacy-db` skill can now run reports.
+Success → the `europharmacy-db` skill can now run reports (it resolves the same `.env`
+automatically: `$EUROPHARMACY_ENV`, then any `.env` in the current directory **or a parent**,
+then `~/.europharmacy/.env`).
+
+### If it fails
+| Symptom | Likely cause |
+|---|---|
+| `TcpTestSucceeded: False` from the client | Firewall rule missing/mis-scoped, or wrong port (Step 1/3) |
+| Connects on LAN but not Tailscale | Server not signed into the same tailnet, or rule bound to the wrong interface |
+| `Login failed for user` | Wrong SQL login/password, or the login lacks access to the database |
+| `login is from an untrusted domain` | You used Windows auth — this setup needs **SQL auth** |
+| Works, then breaks after a reboot | The instance was on a *dynamic* port — set a static one (Step 1) |
 
 ## Security checklist
 - [ ] Reporting uses a **read-only** SQL login (`db_datareader`), not an admin/app login.

@@ -1,0 +1,38 @@
+# ─── Secrets — NEVER commit ──────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.secret
+secrets/
+*.key
+*.pem
+*.pfx
+credentials*.json
+connectionstrings*.json
+
+# ─── Pharmacy business data (reports, exports, dumps) ─────────────────────
+# These contain real sales / patient / financial data. Keep them OUT of git.
+Έρευνα_*.md
+Ανάλυση_*.md
+*_report.md
+*_report.xlsx
+/data/
+/reports/
+/private/
+/local/
+*.bak
+*.csv
+*.xlsx
+
+# ─── Database artifacts ──────────────────────────────────────────────────
+*.mdf
+*.ldf
+*.bacpac
+*.dmp
+
+# ─── OS / editor noise ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/

@@ -160,12 +160,12 @@ GROUP BY mc.MKA_DESCRIPTION ORDER BY Val DESC
 
 $topR = Rows ($LINES + @"
 , a AS (SELECT VD,C,COUNT(DISTINCT Tx) R,SUM(Q) U,SUM(V) V FROM lines WHERE VD='R' GROUP BY VD,C)
-SELECT TOP 8 a.R,a.U,a.V, $NAME N FROM a ORDER BY a.R DESC
+SELECT TOP 20 a.R,a.U,a.V, $NAME N FROM a ORDER BY a.R DESC
 "@)
 
 $topU = Rows ($LINES + @"
 , a AS (SELECT VD,C,COUNT(DISTINCT Tx) R,SUM(Q) U,SUM(V) V FROM lines WHERE VD='U' GROUP BY VD,C)
-SELECT TOP 8 a.R,a.U,a.V, $NAME N FROM a ORDER BY a.R DESC
+SELECT TOP 20 a.R,a.U,a.V, $NAME N FROM a ORDER BY a.R DESC
 "@)
 
 $trend = Rows @"
@@ -191,6 +191,15 @@ $dayGr = @{ 'Monday'='Δευτέρα';'Tuesday'='Τρίτη';'Wednesday'='Τετ
 # Όνομα φαρμακείου για το υποσέλιδο — από το .env, ώστε το script να μένει γενικό
 $pharmacyName = if ($cfg['EUROPHARMACY_NAME']) { $cfg['EUROPHARMACY_NAME'] } else { 'Φαρμακείο' }
 
+# Προαιρετικό logo. Σχετικές διαδρομές λύνονται ως προς τον φάκελο του .env.
+$logoPath = $null
+if ($cfg['EUROPHARMACY_LOGO']) {
+  $lp = $cfg['EUROPHARMACY_LOGO']
+  if (-not [System.IO.Path]::IsPathRooted($lp)) { $lp = Join-Path (Split-Path -Parent (Resolve-EuropharmacyEnv)) $lp }
+  if (Test-Path $lp) { $logoPath = (Resolve-Path $lp).Path }
+  else { Write-Warning "EUROPHARMACY_LOGO δείχνει σε ανύπαρκτο αρχείο: $lp — η αναφορά θα γίνει χωρίς logo." }
+}
+
 $T=[decimal]$totals.T; $PT=[decimal]$totals.PT; $R=[int]$totals.R; $PR=[int]$totals.PR
 $dT  = if ($PT -ne 0) { ($T-$PT)/$PT*100 } else { 0 }
 $dR  = if ($PR -ne 0) { ($R-$PR)/$PR*100 } else { 0 }
@@ -211,16 +220,41 @@ $valAll = $valR + $valU
 # ── Typst ────────────────────────────────────────────────────────────────
 $sb = New-Object System.Text.StringBuilder
 function W($s) { [void]$sb.AppendLine($s) }
+# Κάθε ενότητα σε block που ΔΕΝ σπάει: αν δεν χωράει, μετακινείται ολόκληρη
+# στην επόμενη σελίδα αντί να κοπεί ο πίνακας στη μέση.
+function Sect($title) { W '#block(breakable: false)['; if ($title) { W ('#heading(level: 2)[' + $title + ']') } }
+function EndSect { W ']' }
 
-# χρώματα
-W '#let ACCENT  = rgb("#0f766e")'   # teal
-W '#let ACCENT2 = rgb("#e6f4f1")'   # ανοιχτό teal
-W '#let INK     = rgb("#1f2937")'
-W '#let MUTED   = rgb("#6b7280")'
-W '#let ZEBRA   = rgb("#fafafa")'
+# ── παλέτα ──
+# Ταιριάξτε τη με το logo σας μέσω .env:
+#   EUROPHARMACY_COLOR_PRIMARY  = σκούρο χρώμα μάρκας (μπάρα κεφαλίδας, επικεφαλίδες)
+#   EUROPHARMACY_COLOR_ACCENT   = φωτεινό χρώμα μάρκας (τονισμοί, γραφήματα)
+#   EUROPHARMACY_COLOR_SECOND   = συμπληρωματικό (παραφάρμακα)
+# Αν το logo έχει σκούρο φόντο ίδιο με το PRIMARY, ενσωματώνεται αθόρυβα στην κεφαλίδα.
+$colPrimary = if ($cfg['EUROPHARMACY_COLOR_PRIMARY']) { $cfg['EUROPHARMACY_COLOR_PRIMARY'] } else { '#3f4a5a' }
+$colAccent  = if ($cfg['EUROPHARMACY_COLOR_ACCENT'])  { $cfg['EUROPHARMACY_COLOR_ACCENT']  } else { '#7fc9bd' }
+$colSecond  = if ($cfg['EUROPHARMACY_COLOR_SECOND'])  { $cfg['EUROPHARMACY_COLOR_SECOND']  } else { '#d9a05b' }
+# Παράγωγα: σκουρότερο accent για κείμενο σε λευκό, ανοιχτότερο για δευτερεύουσες μπάρες
+function Shade([string]$hex, [double]$f) {   # f<1 σκουραίνει, f>1 ανοίγει προς το λευκό
+  $h = $hex.TrimStart('#')
+  $r=[Convert]::ToInt32($h.Substring(0,2),16); $g=[Convert]::ToInt32($h.Substring(2,2),16); $b=[Convert]::ToInt32($h.Substring(4,2),16)
+  if ($f -le 1) { $r=[int]($r*$f); $g=[int]($g*$f); $b=[int]($b*$f) }
+  else { $t=$f-1; $r=[int]($r+(255-$r)*$t); $g=[int]($g+(255-$g)*$t); $b=[int]($b+(255-$b)*$t) }
+  '#{0:x2}{1:x2}{2:x2}' -f [math]::Min(255,$r),[math]::Min(255,$g),[math]::Min(255,$b)
+}
+W ('#let NAVY    = rgb("' + $colPrimary + '")')
+W ('#let MINT    = rgb("' + $colAccent + '")')
+W ('#let MINT_DK = rgb("' + (Shade $colAccent 0.70) + '")')
+W ('#let MINT_LT = rgb("' + (Shade $colAccent 1.55) + '")')
+W ('#let SAND    = rgb("' + $colSecond + '")')
+W '#let ACCENT  = NAVY'
+W '#let ACCENT2 = rgb("#eaf0f4")'   # ανοιχτό slate για κεφαλίδες πινάκων
+W '#let INK     = rgb("#25303f")'
+W '#let MUTED   = rgb("#78849a")'
+W '#let ZEBRA   = rgb("#fafbfc")'
 W '#let GOOD    = rgb("#15803d")'
 W '#let BAD     = rgb("#b42318")'
-W '#let WARN    = rgb("#b45309")'
+W '#let WARN    = rgb("#a9702f")'
 W ''
 W '#set page(paper: "a4", margin: (x: 1.4cm, top: 1.2cm, bottom: 1.4cm),'
 W '  footer: context [#set text(size: 7.5pt, fill: MUTED)'
@@ -242,12 +276,32 @@ W '  stroke: (x, y) => (bottom: if y == 0 { 0.9pt + ACCENT } else { 0.25pt + rgb
 W '  inset: (x: 5pt, y: 4pt),'
 W '  ..args)'
 W ''
-# ── κεφαλίδα ──
-W '#block(fill: ACCENT, width: 100%, inset: (x: 12pt, y: 10pt), radius: 3pt)['
-W '  #text(fill: white, size: 16pt, weight: "medium")[Εβδομαδιαία Αναφορά Πωλήσεων] #h(1fr)'
-W ('  #text(fill: rgb("#a7d9d2"), size: 10pt)[' + $ws.ToString('dd/MM/yyyy') + ' – ' + $we.ToString('dd/MM/yyyy') + ']]')
-W ('#text(size: 8pt, fill: MUTED)[Παράχθηκε ' + (Get-Date).ToString('dd/MM/yyyy HH:mm') + ' · ζωντανά δεδομένα]')
-W '#v(2pt)'
+# ── κεφαλίδα (logo + τίτλος σε brand navy μπάρα) ──
+# Το logo έχει ήδη navy φόντο ίδιο με τη μπάρα, οπότε ενσωματώνεται αθόρυβα.
+# Το Typst δεν διαβάζει αρχεία εκτός του root του, οπότε αντιγράφουμε το logo
+# δίπλα στο .typ και το αναφέρουμε με σκέτο όνομα (κρατά και το .typ αυτοτελές).
+$logoTypst = ''
+if ($logoPath) {
+  if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir -Force | Out-Null }
+  $logoLocal = '_logo' + [System.IO.Path]::GetExtension($logoPath)
+  Copy-Item $logoPath (Join-Path (Resolve-Path $OutDir) $logoLocal) -Force
+  # Πολλά logo έχουν μεγάλα κενά περιθώρια. Το ZOOM μεγεθύνει την εικόνα μέσα σε κουτί
+  # σταθερού μεγέθους και το υπερχείλισμα κόβεται (clip), δηλ. «κροπάρει» τα περιθώρια.
+  $zoom = 1.0
+  if ($cfg['EUROPHARMACY_LOGO_ZOOM']) { $zoom = [double]::Parse($cfg['EUROPHARMACY_LOGO_ZOOM'], [Globalization.CultureInfo]::InvariantCulture) }
+  $boxH = 54.0; $boxW = 74.0
+  $imgH = [math]::Round($boxH * $zoom, 1)
+  $logoTypst = 'box(width: ' + $boxW + 'pt, height: ' + $boxH + 'pt, clip: true, align(center + horizon, image("' + $logoLocal + '", height: ' + $imgH + 'pt)))'
+}
+W '#block(fill: NAVY, width: 100%, inset: (x: 0pt, y: 0pt), radius: 4pt, clip: true)['
+W '  #grid(columns: (auto, 1fr), align: (left + horizon, right + horizon), inset: (x: 14pt, y: 9pt),'
+if ($logoTypst) { W ("    $logoTypst,") } else { W '    box(width: 0pt),' }
+W '    align(right)['
+W '      #text(fill: white, size: 16pt, weight: "medium")[Εβδομαδιαία Αναφορά Πωλήσεων] \'
+W ('      #text(fill: MINT, size: 10.5pt)[' + $ws.ToString('dd/MM/yyyy') + ' – ' + $we.ToString('dd/MM/yyyy') + '] \')
+W ('      #text(fill: rgb("#9aa6bd"), size: 7.5pt)[Παράχθηκε ' + (Get-Date).ToString('dd/MM/yyyy HH:mm') + ' · ζωντανά δεδομένα]'  )
+W '    ])]'
+W '#v(3pt)'
 
 # ── KPI cards ──
 $kpi = @(
@@ -266,7 +320,7 @@ W ')'
 if ([int]$totals.CANC -gt 0) { W ('#text(size: 8pt, fill: MUTED)[Ακυρωμένες συναλλαγές: ' + $totals.CANC + ' (εξαιρούνται από όλα τα σύνολα)]') }
 
 # ── ημερήσια ──
-W '== Ημερήσια ανάλυση'
+Sect 'Ημερήσια ανάλυση'
 W '#tbl((auto, 1fr, auto, auto, auto, auto), align: (left, left, right, right, right, right),'
 W '  [*Ημ/νία*],[*Ημέρα*],[*Αποδ.*],[*Σύνολο*],[*Πρωί*],[*Πρωί %*],'
 foreach ($d in $daily) {
@@ -289,18 +343,19 @@ if ($maxDay -gt 0) {
     $hPM = [math]::Round($H * [double]($pm/$maxDay),1)
     W ('  align(center, stack(spacing: 3pt,')
     W ('    box(height: ' + $H + 'pt, align(bottom, stack(dir: btt,')
-    W ('      rect(width: 26pt, height: ' + $hAM + 'pt, fill: ACCENT, stroke: none),')
-    W ('      rect(width: 26pt, height: ' + $hPM + 'pt, fill: rgb("#9ecfc8"), stroke: none)))),')
+    W ('      rect(width: 26pt, height: ' + $hAM + 'pt, fill: MINT_DK, stroke: none),')
+    W ('      rect(width: 26pt, height: ' + $hPM + 'pt, fill: MINT_LT, stroke: none)))),')
     W ('    text(size: 7.5pt, weight: "medium")[' + ([datetime]$d.D).ToString('dd/MM') + '],')
     W ('    text(size: 7pt, fill: MUTED)[' + (M $tt) + '])),')
   }
   W ')'
   W '#v(2pt)'
-  W '#align(center)[#text(size: 7.5pt, fill: MUTED)[#box(width: 8pt, height: 8pt, fill: ACCENT) πρωί (πριν 14:00) #h(10pt) #box(width: 8pt, height: 8pt, fill: rgb("#9ecfc8")) απόγευμα]]'
+  W '#align(center)[#text(size: 7.5pt, fill: MUTED)[#box(width: 8pt, height: 8pt, fill: MINT_DK) πρωί (πριν 14:00) #h(10pt) #box(width: 8pt, height: 8pt, fill: MINT_LT) απόγευμα]]'
 }
 
 # ── ταμεία × ημέρα ──
-W '== Ταμεία ανά ημέρα'
+EndSect
+Sect 'Ταμεία ανά ημέρα'
 $nc = $tillNames.Count
 W ('#tbl((auto,' + (@('1fr') * $nc -join ',') + ', auto), align: (left,' + (@('right') * $nc -join ',') + ', right),')
 W ('  [*Ημ/νία*],' + (($tillNames | ForEach-Object { '[*' + (Esc $_) + '*]' }) -join ',') + ',[*Σύνολο*],')
@@ -318,7 +373,8 @@ W ')'
 W '#text(size: 8pt, fill: MUTED)[Ποσά σε € (πληρωτέο πελατών).]'
 
 # ── τρόποι πληρωμής ──
-W '== Τρόποι πληρωμής'
+EndSect
+Sect 'Τρόποι πληρωμής'
 W '#tbl((auto, auto, auto, auto, auto, auto, auto), align: (left, right, right, right, right, right, right),'
 W '  [*Ημ/νία*],[*Μετρητά*],[*Κάρτα*],[*Κατάθεση*],[*Πίστωση*],[*Εισπράξεις*],[*Διαφ.*],'
 $sC=0;$sK=0;$sD=0;$sP=0;$sT2=0;$sDiff=0
@@ -333,10 +389,10 @@ W ')'
 if ($sT2 -ne 0) {
   # στοιβαγμένη μπάρα μείγματος πληρωμών
   $segs = @(
-    @{ n='Μετρητά';  v=$sC; c='#0f766e' },
-    @{ n='Κάρτα';    v=$sK; c='#2a9d8f' },
-    @{ n='Κατάθεση'; v=$sD; c='#8ecdc4' },
-    @{ n='Πίστωση';  v=$sP; c='#f0a868' }
+    @{ n='Μετρητά';  v=$sC; c=$colPrimary },
+    @{ n='Κάρτα';    v=$sK; c=(Shade $colAccent 0.70) },
+    @{ n='Κατάθεση'; v=$sD; c=$colAccent },
+    @{ n='Πίστωση';  v=$sP; c=$colSecond }
   ) | Where-Object { $_.v -gt 0 }
   $pcts = @(); $acc = 0
   for ($j=0; $j -lt $segs.Count; $j++) {
@@ -358,9 +414,11 @@ if ($sT2 -ne 0) {
   W ('#text(size: 8pt, fill: MUTED)[«Διαφ.» = εισπράξεις μείον αξία πωλήσεων (π.χ. εξόφληση παλιάς οφειλής). Μικρά ποσά φυσιολογικά.]')
 }
 
+EndSect   # κλείσιμο «Τρόποι πληρωμής»
+
 # ── POS ──
 if ($posIds.Count -gt 0) {
-  W '== Κάρτες ανά τερματικό (POS)'
+  Sect 'Κάρτες ανά τερματικό (POS)'
   $pc = $posIds.Count
   W ('#tbl((auto,' + (@('1fr') * $pc -join ',') + ', auto), align: (left,' + (@('right') * $pc -join ',') + ', right),')
   W ('  [*Ημ/νία*],' + (($posIds | ForEach-Object { '[*POS ' + $_ + '*]' }) -join ',') + ',[*Σύνολο*],')
@@ -376,11 +434,12 @@ if ($posIds.Count -gt 0) {
   W ('  [*Σύνολο*],' + ($pTots -join ',') + ',[*' + (M $sK) + '*],')
   W ')'
   W '#text(size: 8pt, fill: MUTED)[Μη διασυνδεδεμένα τερματικά δεν καταγράφονται με posId και δεν εμφανίζονται ως ξεχωριστή στήλη.]'
+  EndSect
 }
 
 # ── μεγαλύτερες αποδείξεις ──
 if ($big.Count -gt 0) {
-  W '== Μεγαλύτερες αποδείξεις'
+  Sect 'Μεγαλύτερες αποδείξεις'
   W '#tbl((auto, auto, 1fr), align: (left, right, left),'
   W '  [*Ημ/νία & ώρα*],[*Ποσό*],[*Ταμείο*],'
   foreach ($b2 in $big) { W ('  [' + ([datetime]$b2.DT).ToString('dd/MM HH:mm') + '],[' + (M $b2.A) + ' €],[' + (Esc ([string]$b2.M)) + '],') }
@@ -389,10 +448,11 @@ if ($big.Count -gt 0) {
   if ($T -ne 0 -and $mx/$T -gt 0.08) {
     W ('#block(fill: rgb("#fef3f2"), width: 100%, inset: 7pt, radius: 3pt)[#text(size: 8.5pt, fill: BAD)[*Προσοχή:* η μεγαλύτερη απόδειξη είναι ' + [math]::Round($mx/$T*100,1) + '% του εβδομαδιαίου τζίρου. Χωρίς αυτήν οι πωλήσεις είναι ' + (M ($T-$mx)) + ' €.]]')
   }
+  EndSect
 }
 
 # ── φάρμακα vs παραφάρμακα ──
-W '== Φάρμακα vs Παραφάρμακα'
+Sect 'Φάρμακα vs Παραφάρμακα'
 $pR = if ($valAll -ne 0) { [math]::Round($valR/$valAll*100) } else { 0 }
 $pU = 100 - $pR
 W '#grid(columns: (1fr, 1fr), gutter: 8pt,'
@@ -400,7 +460,7 @@ W ('  block(fill: ACCENT2, width: 100%, inset: 9pt, radius: 3pt)[')
 W ('    #text(size: 8.5pt, fill: MUTED)[Φάρμακα (συνταγογραφούμενα & ΟΤΣ, ΕΟΦ)] \')
 W ('    #text(size: 15pt, weight: "medium")[' + (M $valR) + ' €] #h(4pt) #text(fill: ACCENT, weight: "medium")[' + $pR + '%] \')
 W ('    #text(size: 7.5pt, fill: MUTED)[' + [int](($split | Where-Object { $_.VD -eq 'R' }).U) + ' τεμάχια]],')
-W ('  block(fill: rgb("#fdf2e9"), width: 100%, inset: 9pt, radius: 3pt)[')
+W ('  block(fill: rgb("#fbf1e5"), width: 100%, inset: 9pt, radius: 3pt)[')
 W ('    #text(size: 8.5pt, fill: MUTED)[Παραφάρμακα & λοιπά είδη] \')
 W ('    #text(size: 15pt, weight: "medium")[' + (M $valU) + ' €] #h(4pt) #text(fill: WARN, weight: "medium")[' + $pU + '%] \')
 W ('    #text(size: 7.5pt, fill: MUTED)[' + [int](($split | Where-Object { $_.VD -eq 'U' }).U) + ' τεμάχια]],')
@@ -408,7 +468,8 @@ W ')'
 W '#text(size: 8pt, fill: MUTED)[Αξία λιανικής των γραμμών πώλησης (ελεύθερες + συνταγές). Διαφέρει ελαφρώς από το «πληρωτέο πελατών», που αφαιρεί τη συμμετοχή των ταμείων.]'
 
 # ── παραφάρμακα ανά κατηγορία ──
-W '== Παραφάρμακα ανά κατηγορία'
+EndSect
+Sect 'Παραφάρμακα ανά κατηγορία'
 W '#tbl((1fr, auto, auto, auto, auto, 4.2cm), align: (left, right, right, right, right, left),'
 W '  [*Κατηγορία*],[*Αποδ.*],[*Τεμ.*],[*Αξία*],[*%*],[],'
 $maxCat = ($paraCat | ForEach-Object { [decimal]$_.Val } | Measure-Object -Maximum).Maximum
@@ -416,29 +477,30 @@ foreach ($c in $paraCat) {
   $cv=[decimal]$c.Val
   $sh = if ($valU -ne 0) { [math]::Round($cv/$valU*100,1) } else { 0 }
   $bw = if ($maxCat -gt 0) { [math]::Round([double]($cv/$maxCat*100),1) } else { 0 }
-  $bar = '[#box(width: ' + $bw + '%, height: 7pt, fill: rgb("#f0a868"), radius: 1pt)]'
+  $bar = '[#box(width: ' + $bw + '%, height: 7pt, fill: SAND, radius: 1pt)]'
   W ('  [' + (Esc ([string]$c.Cat)) + '],[' + $c.Rc + '],[' + [int]$c.U + '],[' + (M $cv) + '],[' + $sh.ToString('N1',$gr) + '%],' + $bar + ',')
 }
 W ("  [*Σύνολο*],[],[],[*$(M $valU)*],[*100,0*],[],")
 W ')'
+EndSect
 
 # ── top ανά κατηγορία ──
-W '== Top προϊόντα ανά κατηγορία'
-W '#grid(columns: (1fr), gutter: 6pt,'
-W '  block[#text(size: 9.5pt, weight: "medium", fill: ACCENT)[Φάρμακα]'
-W '  #v(3pt)'
-W '  #tbl((auto, 1fr, auto, auto, auto), align: (right, left, right, right, right),'
-W '    [*\#*],[*Προϊόν*],[*Αποδ.*],[*Τεμ.*],[*Αξία*],'
-$i=0; foreach ($p in $topR) { $i++; W ("    [$i],[" + (Esc ([string]$p.N)) + "],[" + $p.R + "],[" + [int]$p.U + "],[" + (M $p.V) + "],") }
-W '  )],'
-W '  block[#text(size: 9.5pt, weight: "medium", fill: WARN)[Παραφάρμακα]'
-W '  #v(3pt)'
-W '  #tbl((auto, 1fr, auto, auto, auto), align: (right, left, right, right, right),'
-W '    [*\#*],[*Προϊόν*],[*Αποδ.*],[*Τεμ.*],[*Αξία*],'
-$i=0; foreach ($p in $topU) { $i++; W ("    [$i],[" + (Esc ([string]$p.N)) + "],[" + $p.R + "],[" + [int]$p.U + "],[" + (M $p.V) + "],") }
-W '  )],'
-W ')'
-W '#text(size: 8pt, fill: MUTED)[Κατάταξη κατά πλήθος διαφορετικών αποδείξεων = πραγματικό εύρος ζήτησης. Ο διαχωρισμός ακολουθεί τον χαρακτηρισμό της βάσης (μητρώο ΕΟΦ vs είδη χρήστη)· ένα φάρμακο καταχωρημένο ως «είδος χρήστη» εμφανίζεται στα παραφάρμακα.]'
+$rankNote = '#text(size: 8pt, fill: MUTED)[Κατάταξη κατά πλήθος διαφορετικών αποδείξεων = πραγματικό εύρος ζήτησης. Ο διαχωρισμός ακολουθεί τον χαρακτηρισμό της βάσης (μητρώο ΕΟΦ vs είδη χρήστη)· ένα φάρμακο καταχωρημένο ως «είδος χρήστη» εμφανίζεται στα παραφάρμακα.]'
+foreach ($grp in @(
+    @{ t = 'Top ' + $topR.Count + ' φάρμακα';      rows = $topR; col = 'ACCENT' },
+    @{ t = 'Top ' + $topU.Count + ' παραφάρμακα'; rows = $topU; col = 'SAND'  })) {
+  Sect $grp.t
+  W '#tbl((auto, 1fr, auto, auto, auto), align: (right, left, right, right, right),'
+  W '  [*\#*],[*Προϊόν*],[*Αποδ.*],[*Τεμ.*],[*Αξία*],'
+  $i = 0
+  foreach ($p in $grp.rows) {
+    $i++
+    W ("  [$i],[" + (Esc ([string]$p.N)) + "],[" + $p.R + "],[" + [int]$p.U + "],[" + (M $p.V) + "],")
+  }
+  W ')'
+  W $rankNote
+  EndSect
+}
 
 # ── τάση ──
 $maxS = ($trend | ForEach-Object { [decimal]$_.Sales } | Measure-Object -Maximum).Maximum
@@ -452,7 +514,7 @@ foreach ($w in $trend) {
   $lbl = ([datetime]$w.S).ToString('dd/MM') + '–' + ([datetime]$w.E).ToString('dd/MM')
   $cur = ([datetime]$w.S) -ge $ws
   $frac = if ($maxS -gt 0) { [math]::Round($wt/$maxS,3) } else { 0 }
-  $col = if ($cur) { 'ACCENT' } else { 'rgb("#b8ddd8")' }
+  $col = if ($cur) { 'NAVY' } else { 'MINT_LT' }
   $b = if ($cur) { '*' } else { '' }
   W ("  [$b$lbl$b],[$($w.Dys)],[$b$(M $wt)$b],[$(M $wa)],[#box(width: " + ($frac*100) + "%, height: 7pt, fill: $col, radius: 1pt)],")
 }

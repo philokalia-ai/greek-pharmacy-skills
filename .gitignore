@@ -47,3 +47,7 @@ desktop.ini
 # Local, per-pharmacy notes that must never be published
 SITE-NOTES.md
 **/SITE-NOTES.md
+
+# Pharmacy logo / brand assets stay local
+assets/
+_logo.*

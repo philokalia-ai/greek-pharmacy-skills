@@ -8,6 +8,7 @@
     .\daily-report.ps1                    # η τελευταία ημέρα με πωλήσεις
     .\daily-report.ps1 -Date 2026-07-31
     .\daily-report.ps1 -Date 2026-07-31 -Email
+    .\daily-report.ps1 -Today -Email     # για βραδινό scheduled run (πάντα η σημερινή)
 #>
 [CmdletBinding()]
 param(
@@ -15,6 +16,7 @@ param(
   [string]$OutDir,
   [switch]$NoOpen,
   [switch]$Email,
+  [switch]$Today,
   [int]$BaselineDays = 8
 )
 $ErrorActionPreference = 'Stop'
@@ -24,14 +26,27 @@ $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 . (Join-Path $scriptDir 'lib\report-common.ps1')
 if (-not $OutDir) { $OutDir = Join-Path $scriptDir '..\Αναφορές' }
 
+$LogDir = Join-Path $OutDir 'logs'
+# trap: καταγράφει την αιτία πριν βγει το script, ώστε μια αποτυχία του scheduled
+# task να μη φαίνεται μόνο ως «LastTaskResult = 1».
+trap {
+  Write-ReportLog -LogDir $LogDir -Level 'ERROR' -Message ("Ημερήσια: " + $_.Exception.Message + " @γραμμή " + $_.InvocationInfo.ScriptLineNumber)
+  break
+}
+
 $cfg   = Get-PharmacyConfig -StartDir $scriptDir
 $brand = Get-Brand $cfg
-$db    = Open-PharmacyDb $cfg
+$db    = Open-PharmacyDb -Cfg $cfg -LogDir $LogDir
 $cn    = $db.Connection
 function Q($sql) { Invoke-Rows -Connection $cn -Sql $sql }
 
 # ── ημερομηνία ───────────────────────────────────────────────────────────
 if ($Date) { $D = [datetime]::ParseExact($Date,'yyyy-MM-dd',$null) }
+elseif ($Today) {
+  # Για το βραδινό scheduled run: πάντα η σημερινή ημέρα. Χωρίς αυτό, μια κλειστή
+  # ημέρα θα έστελνε ξανά την αναφορά της προηγούμενης ανοιχτής ημέρας.
+  $D = [datetime](Q "SELECT CAST(GETDATE() AS DATE) D")[0].D
+}
 else {
   $r = Q "SELECT TOP 1 CAST([DateTime] AS DATE) D FROM Transactions WHERE False_Tran=0 GROUP BY CAST([DateTime] AS DATE) ORDER BY D DESC"
   if (-not $r) { throw "Δεν υπάρχουν καθόλου πωλήσεις στη βάση." }
@@ -40,14 +55,23 @@ else {
 $d0 = $D.ToString('yyyy-MM-dd'); $d1 = $D.AddDays(1).ToString('yyyy-MM-dd')
 
 # ── δεδομένα ημέρας ──────────────────────────────────────────────────────
+# ISNULL: σε ημέρα χωρίς καμία γραμμή, το SUM επιστρέφει NULL και η μετατροπή σε
+# int/decimal σκάει πριν προλάβει ο έλεγχος «κλειστά» παρακάτω.
 $tot = (Q @"
-SELECT SUM(CASE WHEN False_Tran=0 THEN 1 ELSE 0 END) R,
-       SUM(CASE WHEN False_Tran=0 THEN [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] ELSE 0 END) T,
-       SUM(CASE WHEN False_Tran=1 THEN 1 ELSE 0 END) CANC
+SELECT ISNULL(SUM(CASE WHEN False_Tran=0 THEN 1 ELSE 0 END),0) R,
+       ISNULL(SUM(CASE WHEN False_Tran=0 THEN [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] ELSE 0 END),0) T,
+       ISNULL(SUM(CASE WHEN False_Tran=1 THEN 1 ELSE 0 END),0) CANC
 FROM Transactions WHERE [DateTime]>='$d0' AND [DateTime]<'$d1'
 "@)[0]
 $R = [int]$tot.R; $T = [decimal]$tot.T
-if ($R -eq 0) { throw "Καμία πώληση στις $($D.ToString('dd/MM/yyyy')) — το φαρμακείο ήταν κλειστό;" }
+if ($R -eq 0) {
+  # Κλειστή ημέρα (Κυριακή, αργία, άδεια): δεν είναι σφάλμα. Βγαίνουμε ήσυχα με
+  # κωδικό 0, ώστε το scheduled task να μη «κοκκινίζει» κάθε Κυριακή.
+  Write-ReportLog -LogDir $LogDir -Message ("Ημερήσια " + $D.ToString('yyyy-MM-dd') + ": καμία πώληση — κλειστά. Παραλείπεται.")
+  Write-Output ("Καμία πώληση στις " + $D.ToString('dd/MM/yyyy') + " — το φαρμακείο ήταν κλειστό. Δεν παράγεται αναφορά.")
+  $cn.Close()
+  exit 0
+}
 $avg = $T / $R
 
 # baseline: οι τελευταίες Ν ίδιες ημέρες εβδομάδας (χωρίς χονδρικές >=10k)
@@ -304,5 +328,7 @@ if ($Email) {
 "@
   $to = Send-PharmacyMail -Cfg $cfg -Subject ("Ημερήσια αναφορά " + $D.ToString('dd/MM/yyyy')) -BodyHtml $body -Files @($pdf)
   Write-Output "Email -> $to"
+  Write-ReportLog -LogDir $LogDir -Message ("Ημερήσια " + $D.ToString('yyyy-MM-dd') + ": email -> " + $to)
 }
+Write-ReportLog -LogDir $LogDir -Message ("Ημερήσια " + $D.ToString('yyyy-MM-dd') + " OK — " + (Format-Money $T) + " €, " + $R + " αποδ. (route " + $db.Route + ")")
 if (-not $NoOpen) { Invoke-Item $pdf }

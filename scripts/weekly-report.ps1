@@ -21,33 +21,18 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 if (-not $OutDir) { $OutDir = Join-Path $scriptDir '..\Αναφορές' }
 
-# ── .env ─────────────────────────────────────────────────────────────────
-function Resolve-EuropharmacyEnv {
-  $isOurs = { param($p) (Test-Path $p) -and (Select-String -Path $p -Pattern '^\s*EUROPHARMACY_DB_' -Quiet) }
-  if ($env:EUROPHARMACY_ENV -and (& $isOurs $env:EUROPHARMACY_ENV)) { return $env:EUROPHARMACY_ENV }
-  $d = $scriptDir
-  while ($d) {
-    $p = Join-Path $d '.env'
-    if (& $isOurs $p) { return $p }
-    $par = Split-Path $d -Parent; if ($par -eq $d) { break }; $d = $par
-  }
-  $h = Join-Path $HOME '.europharmacy\.env'
-  if (& $isOurs $h) { return $h }
-  throw "Δεν βρέθηκε .env (δες skill europharmacy-setup)."
-}
-$cfg = @{}
-# -Encoding UTF8: το .env είναι UTF-8 (συχνά χωρίς BOM). Χωρίς αυτό, το PS 5.1 το διαβάζει
-# ως ANSI και σπάνε τυχόν ελληνικές τιμές (π.χ. EUROPHARMACY_NAME).
-Get-Content (Resolve-EuropharmacyEnv) -Encoding UTF8 | Where-Object { $_ -match '^\s*[^#].*=' } |
-  ForEach-Object { $k,$v = $_ -split '=',2; $cfg[$k.Trim()] = $v.Trim() }
+# ── κοινή βιβλιοθήκη (.env, σύνδεση, logging, email) ─────────────────────
+. (Join-Path $scriptDir 'lib\report-common.ps1')
+$cfg = Get-PharmacyConfig -StartDir $scriptDir
 
-$cn = $null; $route = ''
-foreach ($k in @('EUROPHARMACY_DB_CONNSTR','EUROPHARMACY_DB_CONNSTR_LAN')) {
-  if (-not $cfg[$k]) { continue }
-  try { $cn = New-Object System.Data.SqlClient.SqlConnection ($cfg[$k] + ";Connect Timeout=20"); $cn.Open(); $route = $k; break }
-  catch { $cn = $null }
+$LogDir = Join-Path $OutDir 'logs'
+trap {
+  Write-ReportLog -LogDir $LogDir -Level 'ERROR' -Message ("Εβδομαδιαία: " + $_.Exception.Message + " @γραμμή " + $_.InvocationInfo.ScriptLineNumber)
+  break
 }
-if (-not $cn) { throw "Δεν υπάρχει σύνδεση με τη βάση (server κλειστός ή Tailscale down)." }
+$db    = Open-PharmacyDb -Cfg $cfg -LogDir $LogDir
+$cn    = $db.Connection
+$route = $db.Route
 $cmd = $cn.CreateCommand()
 $cmd.CommandText = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; SET DATEFIRST 1;"
 $cmd.ExecuteNonQuery() | Out-Null
@@ -197,7 +182,7 @@ $pharmacyName = if ($cfg['EUROPHARMACY_NAME']) { $cfg['EUROPHARMACY_NAME'] } els
 $logoPath = $null
 if ($cfg['EUROPHARMACY_LOGO']) {
   $lp = $cfg['EUROPHARMACY_LOGO']
-  if (-not [System.IO.Path]::IsPathRooted($lp)) { $lp = Join-Path (Split-Path -Parent (Resolve-EuropharmacyEnv)) $lp }
+  if (-not [System.IO.Path]::IsPathRooted($lp)) { $lp = Join-Path $cfg['_envDir'] $lp }
   if (Test-Path $lp) { $logoPath = (Resolve-Path $lp).Path }
   else { Write-Warning "EUROPHARMACY_LOGO δείχνει σε ανύπαρκτο αρχείο: $lp — η αναφορά θα γίνει χωρίς logo." }
 }
@@ -546,6 +531,7 @@ if ($LASTEXITCODE -ne 0) { throw "Απέτυχε το compile του typst." }
 
 Write-Output "OK route=$route"
 Write-Output "PDF: $pdf"
+Write-ReportLog -LogDir $LogDir -Message ("Εβδομαδιαία " + $ws.ToString('yyyy-MM-dd') + " OK — " + (M $T) + " €, " + [int]$totals.R + " αποδ. (route " + $route + ")")
 
 # ── προαιρετικό email ────────────────────────────────────────────────────
 if ($Email) {

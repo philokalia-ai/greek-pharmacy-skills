@@ -34,19 +34,41 @@ function Get-PharmacyConfig {
 
 # ── βάση ─────────────────────────────────────────────────────────────────
 function Open-PharmacyDb {
-  param([hashtable]$Cfg, [int]$Timeout = 20)
-  foreach ($k in @('EUROPHARMACY_DB_CONNSTR','EUROPHARMACY_DB_CONNSTR_LAN')) {
-    if (-not $Cfg[$k]) { continue }
-    try {
-      $cn = New-Object System.Data.SqlClient.SqlConnection ($Cfg[$k] + ";Connect Timeout=$Timeout")
-      $cn.Open()
-      $c = $cn.CreateCommand()
-      $c.CommandText = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; SET DATEFIRST 1;"
-      $c.ExecuteNonQuery() | Out-Null
-      return [pscustomobject]@{ Connection = $cn; Route = $k }
-    } catch { }
+  # Retries: όταν το task ξεκινά λίγο μετά την εκκίνηση του υπολογιστή, το Tailscale
+  # μπορεί να μην έχει συνδεθεί ακόμη. Χωρίς επαναλήψεις η αναφορά απλώς αποτυγχάνει.
+  param([hashtable]$Cfg, [int]$Timeout = 20, [int]$Retries = 5, [int]$RetryDelaySec = 30, [string]$LogDir)
+  for ($attempt = 1; $attempt -le $Retries; $attempt++) {
+    foreach ($k in @('EUROPHARMACY_DB_CONNSTR','EUROPHARMACY_DB_CONNSTR_LAN')) {
+      if (-not $Cfg[$k]) { continue }
+      try {
+        $cn = New-Object System.Data.SqlClient.SqlConnection ($Cfg[$k] + ";Connect Timeout=$Timeout")
+        $cn.Open()
+        $c = $cn.CreateCommand()
+        $c.CommandText = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; SET DATEFIRST 1;"
+        $c.ExecuteNonQuery() | Out-Null
+        if ($attempt -gt 1 -and $LogDir) { Write-ReportLog -LogDir $LogDir -Message "Σύνδεση OK ($k) στην προσπάθεια $attempt." }
+        return [pscustomobject]@{ Connection = $cn; Route = $k }
+      } catch { }
+    }
+    if ($attempt -lt $Retries) {
+      if ($LogDir) { Write-ReportLog -LogDir $LogDir -Level 'WARN' -Message "Αποτυχία σύνδεσης (προσπάθεια $attempt/$Retries) — νέα δοκιμή σε ${RetryDelaySec}s." }
+      Start-Sleep -Seconds $RetryDelaySec
+    }
   }
-  throw "Δεν υπάρχει σύνδεση με τη βάση (server κλειστός ή Tailscale down)."
+  throw "Δεν υπάρχει σύνδεση με τη βάση μετά από $Retries προσπάθειες (server κλειστός ή Tailscale down)."
+}
+
+# ── logging ──────────────────────────────────────────────────────────────
+# Χωρίς αρχείο καταγραφής, μια αποτυχία του scheduled task φαίνεται μόνο ως
+# «LastTaskResult = 1» χωρίς καμία ένδειξη για την αιτία.
+function Write-ReportLog {
+  param([string]$LogDir, [string]$Message, [string]$Level = 'INFO')
+  if (-not $LogDir) { return }
+  try {
+    if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
+    $line = '{0} [{1,-5}] {2}' -f (Get-Date).ToString('yyyy-MM-dd HH:mm:ss'), $Level, $Message
+    Add-Content -Path (Join-Path $LogDir ('report-' + (Get-Date).ToString('yyyy-MM') + '.log')) -Value $line -Encoding UTF8
+  } catch { }
 }
 
 function Invoke-Rows {

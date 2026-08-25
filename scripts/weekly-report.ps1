@@ -183,7 +183,37 @@ FROM Transactions t $JT
 WHERE t.[DateTime]>='$f' AND t.[DateTime]<'$t' AND t.False_Tran=0
 GROUP BY $CLS
 "@
+$mix = Rows @"
+WITH l AS (
+ SELECT d.[ΒΔ] VD, (d.[ΤΙΜΗ]*d.[ΤΕΜΑΧΙΑ]-ISNULL(d.[ΕΚΠΤΩΣΗ_ΑΞ],0)) V
+ FROM FreeSalesDetails d JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=d.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+ WHERE x.[DateTime]>='$f' AND x.[DateTime]<'$t' AND x.False_Tran=0 AND ISNULL(d.Hidden,0)=0
+   AND $RET AND ISNULL(dc.F5,0)=0
+ UNION ALL
+ SELECT p.[ΒΔ], (ISNULL(p.[ΛΙΑΝΙΚΗ_ΤΙΜΗ],0)*p.[ΤΕΜΑΧΙΑ])
+ FROM PrescDetails p JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+ WHERE x.[DateTime]>='$f' AND x.[DateTime]<'$t' AND x.False_Tran=0 AND $RET AND ISNULL(dc.F5,0)=0)
+SELECT VD, SUM(V) Val FROM l GROUP BY VD
+"@
 $cn.Close()
+
+# ── σύνθεση τζίρου (για τη μπάρα) ──
+# Το «σύνολο» περιλαμβάνει τα τιμολόγια ΕΟΠΥΥ· τα επιμέρους breakdowns παραμένουν λιανική.
+function DocAmt($k) {
+  $x = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
+  if ($x) { [decimal]$x.A } else { [decimal]0 }
+}
+$segE   = (DocAmt 'ΕΟΠΥΥ') + (DocAmt 'ΤΙΜΟΛΟΓΙΟ')
+$segF5  = DocAmt 'ΔΛΠ'
+$alpTot = (DocAmt 'ΑΛΠ') + (DocAmt 'ΠΙΣΤΩΤΙΚΟ') + (DocAmt 'ΧΩΡΙΣ')
+$mixR = [decimal](($mix | Where-Object { [string]$_.VD -eq 'R' } | Select-Object -First 1).Val)
+$mixU = [decimal](($mix | Where-Object { [string]$_.VD -eq 'U' } | Select-Object -First 1).Val)
+$mixT = $mixR + $mixU
+# Το ΑΛΠ μέρος μοιράζεται σε φάρμακα/παραφάρμακα με την αναλογία των γραμμών του.
+$segF = if ($mixT -gt 0) { $alpTot * $mixR / $mixT } else { $alpTot }
+$segP = $alpTot - $segF
+$TAll = $segE + $segF + $segP + $segF5
+
 
 # ── helpers ──────────────────────────────────────────────────────────────
 $gr = [System.Globalization.CultureInfo]::GetCultureInfo('el-GR')
@@ -309,11 +339,12 @@ W '#v(3pt)'
 
 # ── KPI cards ──
 $kpi = @(
-  @{ l='Πωλήσεις'; v="$(M $T) €"; d=(Delta $dT); s="προηγ. $(M $PT) €" },
+  @{ l='Σύνολο εβδομάδας'; v="$(M $TAll) €"; d=''; s='λιανική + τιμολόγια' },
+  @{ l='Λιανική'; v="$(M $T) €"; d=(Delta $dT); s="προηγ. $(M $PT) €" },
   @{ l='Αποδείξεις'; v="$R"; d=(Delta $dR); s="προηγ. $PR" },
   @{ l='Μέσο καλάθι'; v="$(M $avg) €"; d=(Delta $dA); s="προηγ. $(M $pavg) €" }
 )
-W '#grid(columns: (1fr, 1fr, 1fr), gutter: 8pt,'
+W '#grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 8pt,'
 foreach ($k in $kpi) {
   W ('  block(fill: ACCENT2, width: 100%, inset: 9pt, radius: 3pt)[')
   W ('    #text(size: 8.5pt, fill: MUTED)[' + $k.l + '] \')
@@ -328,6 +359,9 @@ $docLbl = @{ 'ΑΛΠ'='Αποδείξεις λιανικής'; 'ΔΛΠ'='Δελ�
              'ΕΟΠΥΥ'='Τιμολόγια Ε.Ο.Π.Υ.Υ.'; 'ΤΙΜΟΛΟΓΙΟ'='Λοιπά τιμολόγια'; 'ΧΩΡΙΣ'='Χωρίς παραστατικό' }
 $retailKeys = @('ΑΛΠ','ΔΛΠ','ΠΙΣΤΩΤΙΚΟ','ΧΩΡΙΣ')
 $nonRetail = @($docs | Where-Object { $retailKeys -notcontains [string]$_.Cls })
+$bar = Get-TypstCompositionBar -Eopyy $segE -Pharma $segF -Para $segP -F5 $segF5
+if ($bar) { Sect 'Σύνθεση τζίρου'; W $bar; EndSect }
+
 Sect 'Ανάλυση κατά παραστατικό'
 W '#tbl((1fr, auto, auto, auto), align: (left, right, right, left),'
 W '  [*Παραστατικό*],[*Πλήθος*],[*Ποσό*],[],'

@@ -172,7 +172,36 @@ SELECT COUNT(DISTINCT p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]) N FROM PrescDetails p
 JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
 WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND $RET
 "@)[0].N
+$mix = Q @"
+WITH l AS (
+ SELECT d.[ΒΔ] VD, (d.[ΤΙΜΗ]*d.[ΤΕΜΑΧΙΑ]-ISNULL(d.[ΕΚΠΤΩΣΗ_ΑΞ],0)) V
+ FROM FreeSalesDetails d JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=d.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+ WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND ISNULL(d.Hidden,0)=0
+   AND $RET AND ISNULL(dc.F5,0)=0
+ UNION ALL
+ SELECT p.[ΒΔ], (ISNULL(p.[ΛΙΑΝΙΚΗ_ΤΙΜΗ],0)*p.[ΤΕΜΑΧΙΑ])
+ FROM PrescDetails p JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+ WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND $RET AND ISNULL(dc.F5,0)=0)
+SELECT VD, SUM(V) Val FROM l GROUP BY VD
+"@
 $cn.Close()
+
+# ── σύνθεση τζίρου (για τη μπάρα) ──
+# Το «σύνολο» περιλαμβάνει τα τιμολόγια ΕΟΠΥΥ· τα επιμέρους breakdowns παραμένουν λιανική.
+function DocAmt($k) {
+  $x = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
+  if ($x) { [decimal]$x.A } else { [decimal]0 }
+}
+$segE   = (DocAmt 'ΕΟΠΥΥ') + (DocAmt 'ΤΙΜΟΛΟΓΙΟ')
+$segF5  = DocAmt 'ΔΛΠ'
+$alpTot = (DocAmt 'ΑΛΠ') + (DocAmt 'ΠΙΣΤΩΤΙΚΟ') + (DocAmt 'ΧΩΡΙΣ')
+$mixR = [decimal](($mix | Where-Object { [string]$_.VD -eq 'R' } | Select-Object -First 1).Val)
+$mixU = [decimal](($mix | Where-Object { [string]$_.VD -eq 'U' } | Select-Object -First 1).Val)
+$mixT = $mixR + $mixU
+# Το ΑΛΠ μέρος μοιράζεται σε φάρμακα/παραφάρμακα με την αναλογία των γραμμών του.
+$segF = if ($mixT -gt 0) { $alpTot * $mixR / $mixT } else { $alpTot }
+$segP = $alpTot - $segF
+$TAll = $segE + $segF + $segP + $segF5
 
 # ── Typst ────────────────────────────────────────────────────────────────
 $sb = New-Object System.Text.StringBuilder
@@ -192,10 +221,10 @@ W '#v(3pt)'
 
 # KPI
 $kpis = @(
-  @{ l='Πωλήσεις';     v=((Format-Money $T) + ' €'); d=(Delta $dT); s=("τυπική " + (Format-Money $bT) + ' €') },
-  @{ l='Αποδείξεις';   v="$R";                        d=(Delta $dR); s=("τυπικά " + (Format-Num $bR 0)) },
-  @{ l='Μέσο καλάθι';  v=((Format-Money $avg) + ' €'); d=(Delta $dA); s=("τυπικά " + (Format-Money $bA) + ' €') },
-  @{ l='Με συνταγή';   v="$rx";                        d='';          s=("$([math]::Round($rx*100.0/$R))% των αποδείξεων") }
+  @{ l='Σύνολο ημέρας'; v=((Format-Money $TAll) + ' €'); d='';          s='λιανική + τιμολόγια' },
+  @{ l='Λιανική';       v=((Format-Money $T) + ' €');   d=(Delta $dT); s=("τυπική " + (Format-Money $bT) + ' €') },
+  @{ l='Αποδείξεις';    v="$R";                         d=(Delta $dR); s=("τυπικά " + (Format-Num $bR 0)) },
+  @{ l='Μέσο καλάθι';   v=((Format-Money $avg) + ' €'); d=(Delta $dA); s=("τυπικά " + (Format-Money $bA) + ' €') }
 )
 W '#grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 7pt,'
 foreach ($k in $kpis) {
@@ -206,6 +235,15 @@ foreach ($k in $kpis) {
 }
 W ')'
 if ([int]$tot.CANC -gt 0) { W ('#text(size: 7.5pt, fill: MUTED)[Ακυρωμένες: ' + $tot.CANC + ' (εξαιρούνται)]') }
+
+# ── μπάρα σύνθεσης τζίρου ──
+$bar = Get-TypstCompositionBar -Eopyy $segE -Pharma $segF -Para $segP -F5 $segF5
+if ($bar) {
+  Sect 'Σύνθεση τζίρου'
+  W $bar
+  W ('#text(size: 7pt, fill: MUTED)[Με συνταγή: ' + $rx + ' αποδείξεις (' + [math]::Round($rx*100.0/$R) + '% της λιανικής). Ο διαχωρισμός φαρμάκων/παραφαρμάκων ακολουθεί την αναλογία των γραμμών των αποδείξεων λιανικής.]')
+  EndSect
+}
 
 # ── ανάλυση κατά είδος παραστατικού ──
 $docLbl = @{ 'ΑΛΠ'='Αποδείξεις λιανικής'; 'ΔΛΠ'='Δελτία λιανικής πώλησης'; 'ΠΙΣΤΩΤΙΚΟ'='Πιστωτικά (επιστροφές)';

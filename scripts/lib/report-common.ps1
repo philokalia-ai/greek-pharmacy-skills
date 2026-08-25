@@ -100,6 +100,51 @@ function Get-RetailFilterSql { param([string]$Alias = 'ce')
   "(ISNULL($Alias.[ΕΙΔΟΣ_ΠΑΡΑΣΤΑΤΙΚΟΥ],1) IN (1,2))"
 }
 
+# ── μπάρα σύνθεσης τζίρου ────────────────────────────────────────────────
+# [ΕΕΕΕ ΦΦΦΦΦΦ ΠΠΠΠΠ · f5]
+#   Ε  = τιμολόγια (ΕΟΠΥΥ και λοιπά)
+#   Φ  = φάρμακα λιανικής        Π = παραφάρμακα λιανικής
+#   f5 = δελτία λιανικής πώλησης — χωριστά στο τέλος, μετά από κενό
+# Τα τέσσερα τμήματα αθροίζουν στο ΣΥΝΟΛΟ, οπότε η μπάρα δείχνει πού πάει
+# κάθε ευρώ του τζίρου.
+function Get-TypstCompositionBar {
+  param([decimal]$Eopyy, [decimal]$Pharma, [decimal]$Para, [decimal]$F5, [double]$Height = 17)
+  $gr = [System.Globalization.CultureInfo]::GetCultureInfo('el-GR')
+  $total = $Eopyy + $Pharma + $Para + $F5
+  if ($total -le 0) { return '' }
+  $segs = @(
+    @{ k='Ε';  n='Τιμολόγια (ΕΟΠΥΥ κ.λπ.)'; v=$Eopyy;  c='NAVY' },
+    @{ k='Φ';  n='Φάρμακα';                 v=$Pharma; c='MINT_DK' },
+    @{ k='Π';  n='Παραφάρμακα';             v=$Para;   c='SAND' }
+  ) | Where-Object { $_.v -gt 0 }
+  $cols = @(); $cells = @()
+  foreach ($s in $segs) {
+    $cols += ([math]::Round([double]($s.v / $total) * 1000, 2).ToString([Globalization.CultureInfo]::InvariantCulture) + 'fr')
+    $cells += ('box(width: 100%, height: ' + $Height + 'pt, fill: ' + $s.c + ')')
+  }
+  if ($F5 -gt 0) {
+    $cols  += '5pt'                       # το «·»: οπτικός διαχωρισμός
+    $cells += 'box(width: 100%)'
+    $cols  += ([math]::Round([double]($F5 / $total) * 1000, 2).ToString([Globalization.CultureInfo]::InvariantCulture) + 'fr')
+    $cells += ('box(width: 100%, height: ' + $Height + 'pt, fill: MINT_LT, stroke: 0.6pt + NAVY)')
+  }
+  $pc = { param($v) ([decimal]($v / $total * 100)).ToString('N1',$gr) + '%' }
+  $legend = @()
+  foreach ($s in $segs) {
+    $legend += ('#box(width: 8pt, height: 8pt, fill: ' + $s.c + ') *' + $s.k + '* ' + $s.n + ' ' +
+                (([decimal]$s.v).ToString('N2',$gr)) + ' € (' + (& $pc $s.v) + ')')
+  }
+  if ($F5 -gt 0) {
+    $legend += ('#box(width: 8pt, height: 8pt, fill: MINT_LT, stroke: 0.6pt + NAVY) *f5* Δελτία λιαν. πώλησης ' +
+                (([decimal]$F5).ToString('N2',$gr)) + ' € (' + (& $pc $F5) + ')')
+  }
+@"
+#grid(columns: ($($cols -join ', ')), $($cells -join ', '))
+#v(3pt)
+#text(size: 7.5pt, fill: MUTED)[$($legend -join ' #h(10pt) ')]
+"@
+}
+
 # ── logging ──────────────────────────────────────────────────────────────
 # Χωρίς αρχείο καταγραφής, μια αποτυχία του scheduled task φαίνεται μόνο ως
 # «LastTaskResult = 1» χωρίς καμία ένδειξη για την αιτία.

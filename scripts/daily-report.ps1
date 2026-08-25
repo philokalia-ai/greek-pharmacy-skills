@@ -106,7 +106,7 @@ $bT = if ($bN -gt 0) { [decimal]$base.AvgT } else { 0 }
 $bR = if ($bN -gt 0) { [decimal]$base.AvgR } else { 0 }
 $bA = if ($bR -gt 0) { $bT / $bR } else { 0 }
 $dT = if ($bT -ne 0) { [double](($T-$bT)/$bT*100) } else { 0 }
-$dR = if ($bR -ne 0) { [double](($R-$bR)/$bR*100) } else { 0 }
+$deltaR = if ($bR -ne 0) { [double](($R-$bR)/$bR*100) } else { 0 }
 $dA = if ($bA -ne 0) { [double](($avg-$bA)/$bA*100) } else { 0 }
 
 # ωριαίο προφίλ: σήμερα + τυπικό
@@ -223,7 +223,7 @@ W '#v(3pt)'
 $kpis = @(
   @{ l='Σύνολο ημέρας'; v=((Format-Money $TAll) + ' €'); d='';          s='λιανική + τιμολόγια' },
   @{ l='Λιανική';       v=((Format-Money $T) + ' €');   d=(Delta $dT); s=("τυπική " + (Format-Money $bT) + ' €') },
-  @{ l='Αποδείξεις';    v="$R";                         d=(Delta $dR); s=("τυπικά " + (Format-Num $bR 0)) },
+  @{ l='Αποδείξεις';    v="$R";                         d=(Delta $deltaR); s=("τυπικά " + (Format-Num $bR 0)) },
   @{ l='Μέσο καλάθι';   v=((Format-Money $avg) + ' €'); d=(Delta $dA); s=("τυπικά " + (Format-Money $bA) + ' €') }
 )
 W '#grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 7pt,'
@@ -255,11 +255,11 @@ if ($docs.Count -gt 1 -or $nonRetail.Count -gt 0) {
   W '#tbl((1fr, auto, auto, auto), align: (left, right, right, left),'
   W '  [*Παραστατικό*],[*Πλήθος*],[*Ποσό*],[],'
   foreach ($k in @('ΑΛΠ','ΔΛΠ','ΠΙΣΤΩΤΙΚΟ','ΧΩΡΙΣ','ΕΟΠΥΥ','ΤΙΜΟΛΟΓΙΟ')) {
-    $dr = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
-    if (-not $dr) { continue }
+    $docRow = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
+    if (-not $docRow) { continue }
     $isRetail = $retailKeys -contains $k
     $tag = if ($isRetail) { '#text(size: 7pt, fill: MINT_DK)[λιανική]' } else { '#text(size: 7pt, fill: SAND)[εκτός λιανικής]' }
-    W ('  [' + $docLbl[$k] + '],[' + $dr.N + '],[' + (Format-Money $dr.A) + '],[' + $tag + '],')
+    W ('  [' + $docLbl[$k] + '],[' + $docRow.N + '],[' + (Format-Money $docRow.A) + '],[' + $tag + '],')
   }
   $grand = ($docs | ForEach-Object { [decimal]$_.A } | Measure-Object -Sum).Sum
   W ("  [*Σύνολο όλων*],[],[*" + (Format-Money $grand) + "*],[],")
@@ -405,7 +405,7 @@ if ($Email) {
 <p>Η ημερήσια αναφορά για <b>$((Get-GreekDayName $D)) $($D.ToString('dd/MM/yyyy'))</b>:</p>
 <table style="border-collapse:collapse;font-size:14px">
 <tr><td style="padding:2px 12px 2px 0">Πωλήσεις</td><td><b>$(Format-Money $T) €</b> ($(Format-Pct $dT) vs τυπική)</td></tr>
-<tr><td style="padding:2px 12px 2px 0">Αποδείξεις</td><td>$R ($(Format-Pct $dR))</td></tr>
+<tr><td style="padding:2px 12px 2px 0">Αποδείξεις</td><td>$R ($(Format-Pct $deltaR))</td></tr>
 <tr><td style="padding:2px 12px 2px 0">Μέσο καλάθι</td><td>$(Format-Money $avg) € ($(Format-Pct $dA))</td></tr>
 </table></div>
 "@

@@ -236,7 +236,7 @@ if ($cfg['EUROPHARMACY_LOGO']) {
 
 $T=[decimal]$totals.T; $PT=[decimal]$totals.PT; $R=[int]$totals.R; $PR=[int]$totals.PR
 $dT  = if ($PT -ne 0) { ($T-$PT)/$PT*100 } else { 0 }
-$dR  = if ($PR -ne 0) { ($R-$PR)/$PR*100 } else { 0 }
+$deltaR  = if ($PR -ne 0) { ($R-$PR)/$PR*100 } else { 0 }
 $avg = if ($R -gt 0) { $T/$R } else { 0 }
 $pavg= if ($PR -gt 0) { $PT/$PR } else { 0 }
 $dA  = if ($pavg -ne 0) { ($avg-$pavg)/$pavg*100 } else { 0 }
@@ -341,7 +341,7 @@ W '#v(3pt)'
 $kpi = @(
   @{ l='Σύνολο εβδομάδας'; v="$(M $TAll) €"; d=''; s='λιανική + τιμολόγια' },
   @{ l='Λιανική'; v="$(M $T) €"; d=(Delta $dT); s="προηγ. $(M $PT) €" },
-  @{ l='Αποδείξεις'; v="$R"; d=(Delta $dR); s="προηγ. $PR" },
+  @{ l='Αποδείξεις'; v="$R"; d=(Delta $deltaR); s="προηγ. $PR" },
   @{ l='Μέσο καλάθι'; v="$(M $avg) €"; d=(Delta $dA); s="προηγ. $(M $pavg) €" }
 )
 W '#grid(columns: (1fr, 1fr, 1fr, 1fr), gutter: 8pt,'
@@ -366,10 +366,10 @@ Sect 'Ανάλυση κατά παραστατικό'
 W '#tbl((1fr, auto, auto, auto), align: (left, right, right, left),'
 W '  [*Παραστατικό*],[*Πλήθος*],[*Ποσό*],[],'
 foreach ($k in @('ΑΛΠ','ΔΛΠ','ΠΙΣΤΩΤΙΚΟ','ΧΩΡΙΣ','ΕΟΠΥΥ','ΤΙΜΟΛΟΓΙΟ')) {
-  $dr = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
-  if (-not $dr) { continue }
+  $docRow = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
+  if (-not $docRow) { continue }
   $tag = if ($retailKeys -contains $k) { '#text(size: 7pt, fill: MINT_DK)[λιανική]' } else { '#text(size: 7pt, fill: SAND)[εκτός λιανικής]' }
-  W ('  [' + $docLbl[$k] + '],[' + $dr.N + '],[' + (M $dr.A) + '],[' + $tag + '],')
+  W ('  [' + $docLbl[$k] + '],[' + $docRow.N + '],[' + (M $docRow.A) + '],[' + $tag + '],')
 }
 $grand = ($docs | ForEach-Object { [decimal]$_.A } | Measure-Object -Sum).Sum
 W ("  [*Σύνολο όλων*],[],[*" + (M $grand) + "*],[],")
@@ -627,7 +627,7 @@ if ($Email) {
 <p>Η εβδομαδιαία αναφορά για <b>$($ws.ToString('dd/MM'))–$($we.ToString('dd/MM/yyyy'))</b> είναι συνημμένη.</p>
 <table style="border-collapse:collapse;font-size:14px">
 <tr><td style="padding:2px 12px 2px 0">Πωλήσεις</td><td style="padding:2px 0"><b>$(M $T) €</b> ($(Pct $dT))</td></tr>
-<tr><td style="padding:2px 12px 2px 0">Αποδείξεις</td><td style="padding:2px 0">$R ($(Pct $dR))</td></tr>
+<tr><td style="padding:2px 12px 2px 0">Αποδείξεις</td><td style="padding:2px 0">$R ($(Pct $deltaR))</td></tr>
 <tr><td style="padding:2px 12px 2px 0">Μέσο καλάθι</td><td style="padding:2px 0">$(M $avg) € ($(Pct $dA))</td></tr>
 </table>
 <p style="color:#6b7280;font-size:12px">Αυτόματο μήνυμα από τον υπολογιστή του φαρμακείου.</p></div>

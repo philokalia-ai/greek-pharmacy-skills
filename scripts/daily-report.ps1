@@ -40,6 +40,12 @@ $db    = Open-PharmacyDb -Cfg $cfg -LogDir $LogDir
 $cn    = $db.Connection
 function Q($sql) { Invoke-Rows -Connection $cn -Sql $sql }
 
+# Ταξινόμηση παραστατικών: «λιανική» χωριστά από τιμολόγια ΕΟΠΥΥ/λοιπά.
+$JT   = Get-DocJoinSql -Alias 'dc' -TxAlias 't'
+$JX   = Get-DocJoinSql -Alias 'dc' -TxAlias 'x'
+$CLS  = Get-DocClassSql 'dc'
+$RET  = Get-RetailFilterSql 'dc'
+
 # ── ημερομηνία ───────────────────────────────────────────────────────────
 if ($Date) { $D = [datetime]::ParseExact($Date,'yyyy-MM-dd',$null) }
 elseif ($Today) {
@@ -58,11 +64,20 @@ $d0 = $D.ToString('yyyy-MM-dd'); $d1 = $D.AddDays(1).ToString('yyyy-MM-dd')
 # ISNULL: σε ημέρα χωρίς καμία γραμμή, το SUM επιστρέφει NULL και η μετατροπή σε
 # int/decimal σκάει πριν προλάβει ο έλεγχος «κλειστά» παρακάτω.
 $tot = (Q @"
-SELECT ISNULL(SUM(CASE WHEN False_Tran=0 THEN 1 ELSE 0 END),0) R,
-       ISNULL(SUM(CASE WHEN False_Tran=0 THEN [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] ELSE 0 END),0) T,
-       ISNULL(SUM(CASE WHEN False_Tran=1 THEN 1 ELSE 0 END),0) CANC
-FROM Transactions WHERE [DateTime]>='$d0' AND [DateTime]<'$d1'
+SELECT ISNULL(SUM(CASE WHEN t.False_Tran=0 AND $RET THEN 1 ELSE 0 END),0) R,
+       ISNULL(SUM(CASE WHEN t.False_Tran=0 AND $RET THEN t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] ELSE 0 END),0) T,
+       ISNULL(SUM(CASE WHEN t.False_Tran=1 THEN 1 ELSE 0 END),0) CANC
+FROM Transactions t $JT
+WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1'
 "@)[0]
+
+# Ανάλυση κατά είδος παραστατικού (όλα, όχι μόνο λιανική)
+$docs = Q @"
+SELECT $CLS Cls, COUNT(*) N, SUM(t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) A
+FROM Transactions t $JT
+WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1' AND t.False_Tran=0
+GROUP BY $CLS
+"@
 $R = [int]$tot.R; $T = [decimal]$tot.T
 if ($R -eq 0) {
   # Κλειστή ημέρα (Κυριακή, αργία, άδεια): δεν είναι σφάλμα. Βγαίνουμε ήσυχα με
@@ -77,13 +92,12 @@ $avg = $T / $R
 # baseline: οι τελευταίες Ν ίδιες ημέρες εβδομάδας (χωρίς χονδρικές >=10k)
 $baseSql = @"
 WITH days AS (
-  SELECT TOP $BaselineDays CAST([DateTime] AS DATE) D,
-    SUM(CASE WHEN [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]<10000 THEN [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] ELSE 0 END) T,
-    COUNT(*) R
-  FROM Transactions
-  WHERE False_Tran=0 AND CAST([DateTime] AS DATE) < '$d0'
-    AND DATEPART(weekday,[DateTime]) = DATEPART(weekday, CAST('$d0' AS date))
-  GROUP BY CAST([DateTime] AS DATE) ORDER BY D DESC)
+  SELECT TOP $BaselineDays CAST(t.[DateTime] AS DATE) D,
+    SUM(t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) T, COUNT(*) R
+  FROM Transactions t $JT
+  WHERE t.False_Tran=0 AND $RET AND CAST(t.[DateTime] AS DATE) < '$d0'
+    AND DATEPART(weekday,t.[DateTime]) = DATEPART(weekday, CAST('$d0' AS date))
+  GROUP BY CAST(t.[DateTime] AS DATE) ORDER BY D DESC)
 "@
 $baseDays = Q ($baseSql + "SELECT D, T, R FROM days ORDER BY D")
 $base     = (Q ($baseSql + "SELECT COUNT(*) N, AVG(T) AvgT, AVG(R*1.0) AvgR FROM days"))[0]
@@ -97,22 +111,24 @@ $dA = if ($bA -ne 0) { [double](($avg-$bA)/$bA*100) } else { 0 }
 
 # ωριαίο προφίλ: σήμερα + τυπικό
 $hToday = Q @"
-SELECT DATEPART(hour,[DateTime]) H, COUNT(*) R, SUM([ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) T
-FROM Transactions WHERE [DateTime]>='$d0' AND [DateTime]<'$d1' AND False_Tran=0
-GROUP BY DATEPART(hour,[DateTime]) ORDER BY H
+SELECT DATEPART(hour,t.[DateTime]) H, COUNT(*) R, SUM(t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) T
+FROM Transactions t $JT
+WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1' AND t.False_Tran=0 AND $RET
+GROUP BY DATEPART(hour,t.[DateTime]) ORDER BY H
 "@
 $hBase = Q ($baseSql + @"
 , h AS (SELECT CAST(t.[DateTime] AS DATE) D, DATEPART(hour,t.[DateTime]) H,
-        SUM(CASE WHEN t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]<10000 THEN t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] ELSE 0 END) T
-        FROM Transactions t JOIN days ON days.D = CAST(t.[DateTime] AS DATE)
-        WHERE t.False_Tran=0 GROUP BY CAST(t.[DateTime] AS DATE), DATEPART(hour,t.[DateTime]))
+        SUM(t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) T
+        FROM Transactions t $JT JOIN days ON days.D = CAST(t.[DateTime] AS DATE)
+        WHERE t.False_Tran=0 AND $RET GROUP BY CAST(t.[DateTime] AS DATE), DATEPART(hour,t.[DateTime]))
 SELECT H, AVG(T) AvgT FROM h GROUP BY H ORDER BY H
 "@)
 
 $tills = Q @"
-SELECT MachineName M, COUNT(*) R, SUM([ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) T
-FROM Transactions WHERE [DateTime]>='$d0' AND [DateTime]<'$d1' AND False_Tran=0
-GROUP BY MachineName ORDER BY T DESC
+SELECT t.MachineName M, COUNT(*) R, SUM(t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) T
+FROM Transactions t $JT
+WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1' AND t.False_Tran=0 AND $RET
+GROUP BY t.MachineName ORDER BY T DESC
 "@
 
 $pay = (Q @"
@@ -120,20 +136,20 @@ WITH ce AS (SELECT [ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] tx, SUM([ΜΕΤΡΗΤΑ]) ca, S
             FROM CashExtras WHERE ISNULL(Hidden,0)=0 GROUP BY [ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ])
 SELECT SUM(ISNULL(ce.ca,0)) Cash, SUM(ISNULL(ce.cd,0)) Card, SUM(ISNULL(ce.dp,0)) Dep, SUM(ISNULL(ce.cr,0)) Credit,
        SUM(t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ]) Sales
-FROM Transactions t LEFT JOIN ce ON ce.tx=t.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]
-WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1' AND t.False_Tran=0
+FROM Transactions t LEFT JOIN ce ON ce.tx=t.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JT
+WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1' AND t.False_Tran=0 AND $RET
 "@)[0]
 
 $LINES = @"
 WITH lines AS (
  SELECT x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] Tx, d.[ΒΔ] VD, d.[ΚΩΔ_ΕΙΔΟΥΣ] C, d.[ΤΕΜΑΧΙΑ] Q,
         (d.[ΤΙΜΗ]*d.[ΤΕΜΑΧΙΑ]-ISNULL(d.[ΕΚΠΤΩΣΗ_ΑΞ],0)) V
- FROM FreeSalesDetails d JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=d.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]
- WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND ISNULL(d.Hidden,0)=0
+ FROM FreeSalesDetails d JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=d.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+ WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND ISNULL(d.Hidden,0)=0 AND $RET
  UNION ALL
  SELECT x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ], p.[ΒΔ], p.[ΚΩΔ_ΕΙΔΟΥΣ], p.[ΤΕΜΑΧΙΑ], (ISNULL(p.[ΛΙΑΝΙΚΗ_ΤΙΜΗ],0)*p.[ΤΕΜΑΧΙΑ])
- FROM PrescDetails p JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]
- WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0)
+ FROM PrescDetails p JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+ WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND $RET)
 "@
 $split = Q ($LINES + "SELECT VD, SUM(Q) U, SUM(V) Val FROM lines GROUP BY VD")
 $top   = Q ($LINES + @"
@@ -146,14 +162,15 @@ SELECT TOP 10 a.VD, a.R, a.U, a.V,
 FROM a ORDER BY a.R DESC, a.V DESC
 "@)
 $big = Q @"
-SELECT TOP 3 [DateTime] DT, [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] A, MachineName M
-FROM Transactions WHERE [DateTime]>='$d0' AND [DateTime]<'$d1' AND False_Tran=0
-ORDER BY [ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] DESC
+SELECT TOP 3 t.[DateTime] DT, t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] A, t.MachineName M
+FROM Transactions t $JT
+WHERE t.[DateTime]>='$d0' AND t.[DateTime]<'$d1' AND t.False_Tran=0 AND $RET
+ORDER BY t.[ΠΛΗΡΩΤΕΟ_ΠΩΛΗΣΗΣ] DESC
 "@
 $rx = (Q @"
 SELECT COUNT(DISTINCT p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]) N FROM PrescDetails p
-JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]
-WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0
+JOIN Transactions x ON x.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ]=p.[ΚΩΔ_ΣΥΝΑΛΛΑΓΗΣ] $JX
+WHERE x.[DateTime]>='$d0' AND x.[DateTime]<'$d1' AND x.False_Tran=0 AND $RET
 "@)[0].N
 $cn.Close()
 
@@ -189,6 +206,34 @@ foreach ($k in $kpis) {
 }
 W ')'
 if ([int]$tot.CANC -gt 0) { W ('#text(size: 7.5pt, fill: MUTED)[Ακυρωμένες: ' + $tot.CANC + ' (εξαιρούνται)]') }
+
+# ── ανάλυση κατά είδος παραστατικού ──
+$docLbl = @{ 'ΑΛΠ'='Αποδείξεις λιανικής'; 'ΔΛΠ'='Δελτία λιανικής πώλησης'; 'ΠΙΣΤΩΤΙΚΟ'='Πιστωτικά (επιστροφές)';
+          'ΕΟΠΥΥ'='Τιμολόγια Ε.Ο.Π.Υ.Υ.'; 'ΤΙΜΟΛΟΓΙΟ'='Λοιπά τιμολόγια'; 'ΧΩΡΙΣ'='Χωρίς παραστατικό' }
+$retailKeys = @('ΑΛΠ','ΔΛΠ','ΠΙΣΤΩΤΙΚΟ','ΧΩΡΙΣ')
+$nonRetail = @($docs | Where-Object { $retailKeys -notcontains [string]$_.Cls })
+if ($docs.Count -gt 1 -or $nonRetail.Count -gt 0) {
+  Sect 'Ανάλυση κατά παραστατικό'
+  W '#tbl((1fr, auto, auto, auto), align: (left, right, right, left),'
+  W '  [*Παραστατικό*],[*Πλήθος*],[*Ποσό*],[],'
+  foreach ($k in @('ΑΛΠ','ΔΛΠ','ΠΙΣΤΩΤΙΚΟ','ΧΩΡΙΣ','ΕΟΠΥΥ','ΤΙΜΟΛΟΓΙΟ')) {
+    $dr = $docs | Where-Object { [string]$_.Cls -eq $k } | Select-Object -First 1
+    if (-not $dr) { continue }
+    $isRetail = $retailKeys -contains $k
+    $tag = if ($isRetail) { '#text(size: 7pt, fill: MINT_DK)[λιανική]' } else { '#text(size: 7pt, fill: SAND)[εκτός λιανικής]' }
+    W ('  [' + $docLbl[$k] + '],[' + $dr.N + '],[' + (Format-Money $dr.A) + '],[' + $tag + '],')
+  }
+  $grand = ($docs | ForEach-Object { [decimal]$_.A } | Measure-Object -Sum).Sum
+  W ("  [*Σύνολο όλων*],[],[*" + (Format-Money $grand) + "*],[],")
+  W ')'
+  $nrSum = if ($nonRetail.Count) { ($nonRetail | ForEach-Object { [decimal]$_.A } | Measure-Object -Sum).Sum } else { 0 }
+  W ('#text(size: 7.5pt, fill: MUTED)[Ο δείκτης «Πωλήσεις» πιο πάνω μετράει *μόνο τη λιανική* (' + (Format-Money $T) + ' €). Τα τιμολόγια δεν είναι πωλήσεις ημέρας — τιμολογούνται συγκεντρωτικά και θα αλλοίωναν τη σύγκριση με τις άλλες ημέρες.]')
+  if ($nrSum -ne 0) {
+    W ('#text(size: 7.5pt, fill: WARN)[Εκτός λιανικής σήμερα: ' + (Format-Money $nrSum) + ' €.]')
+  }
+  W '#text(size: 7.5pt, fill: MUTED)[Τα «δελτία λιανικής πώλησης» είναι κυρίως επί πιστώσει σε ονομαστικούς πελάτες και δεν φέρουν δικό τους αριθμό — η απόδειξη εκδίδεται με την εξόφληση. Μετρώνται κανονικά στη λιανική.]'
+  EndSect
+}
 
 # ── ωριαίο προφίλ με «τυπική» γραμμή ──
 if ($hToday.Count -gt 0) {

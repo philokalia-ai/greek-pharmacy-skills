@@ -36,7 +36,7 @@ function Get-PharmacyConfig {
 function Open-PharmacyDb {
   # Retries: όταν το task ξεκινά λίγο μετά την εκκίνηση του υπολογιστή, το Tailscale
   # μπορεί να μην έχει συνδεθεί ακόμη. Χωρίς επαναλήψεις η αναφορά απλώς αποτυγχάνει.
-  param([hashtable]$Cfg, [int]$Timeout = 20, [int]$Retries = 5, [int]$RetryDelaySec = 30, [string]$LogDir)
+  param([hashtable]$Cfg, [int]$Timeout = 20, [int]$Retries = 10, [int]$RetryDelaySec = 45, [string]$LogDir)
   for ($attempt = 1; $attempt -le $Retries; $attempt++) {
     foreach ($k in @('EUROPHARMACY_DB_CONNSTR','EUROPHARMACY_DB_CONNSTR_LAN')) {
       if (-not $Cfg[$k]) { continue }
